@@ -1154,20 +1154,18 @@ function getPlanComparison(t){
 function getTaskWarningFlags(t){
   const deadline = getDeadlineStatus(t);
   const plan = getPlanComparison(t);
-  const deps = getDependencyInfo(t);
   return {
     overdue: !!deadline.overdue,
     dueSoon: !!deadline.dueSoon,
     latePlan: !!plan.isLate,
     missingPlan: !!plan.missingPlan,
     noDeadline: !t.deadline_at,
-    dependencyBlocked: !!deps.blocked,
-    hasAnyAlert: !!deadline.overdue || !!deadline.dueSoon || !!plan.isLate || !!deps.blocked
+    hasAnyAlert: !!deadline.overdue || !!deadline.dueSoon || !!plan.isLate
   };
 }
 function projectAlertSummary(p){
   const tasks = p && p.tasks ? p.tasks : [];
-  const summary = { overdue:0, dueSoon:0, latePlan:0, missingPlan:0, noDeadline:0, dependencyBlocked:0, totalAlerts:0 };
+  const summary = { overdue:0, dueSoon:0, latePlan:0, missingPlan:0, noDeadline:0, totalAlerts:0 };
   tasks.forEach(t=>{
     const f = getTaskWarningFlags(t);
     if(f.overdue) summary.overdue++;
@@ -1175,9 +1173,8 @@ function projectAlertSummary(p){
     if(f.latePlan) summary.latePlan++;
     if(f.missingPlan) summary.missingPlan++;
     if(f.noDeadline) summary.noDeadline++;
-    if(f.dependencyBlocked) summary.dependencyBlocked++;
   });
-  summary.totalAlerts = summary.overdue + summary.dueSoon + summary.latePlan + summary.dependencyBlocked;
+  summary.totalAlerts = summary.overdue + summary.dueSoon + summary.latePlan;
   return summary;
 }
 function projectDeadlineAlerts(p){ return projectAlertSummary(p).totalAlerts; }
@@ -1205,7 +1202,6 @@ function taskMatchesProjectFilter(t, filter){
   if(f === 'due_soon') return flags.dueSoon;
   if(f === 'late_plan') return flags.latePlan;
   if(f === 'missing_plan') return flags.missingPlan;
-  if(f === 'dependency_blocked') return flags.dependencyBlocked;
   if(f === 'no_deadline') return flags.noDeadline;
   if(f === 'in_progress') return !t.done && !!cmp.actual_start;
   if(f === 'not_started') return !t.done && !cmp.actual_start;
@@ -1221,7 +1217,6 @@ function projectFilterDefinitions(project){
     ['overdue','Quá hạn',count('overdue'),'alert-triangle'],
     ['due_soon','Sắp đến hạn',count('due_soon'),'bell-ringing'],
     ['late_plan','Chậm KH',count('late_plan'),'calendar-exclamation'],
-    ['dependency_blocked','Phụ thuộc chưa xong',count('dependency_blocked'),'git-branch'],
     ['missing_plan','Thiếu KH',count('missing_plan'),'calendar-question'],
     ['no_deadline','Chưa có hạn',count('no_deadline'),'calendar-off']
   ];
@@ -1249,16 +1244,14 @@ function renderAlertPanel(project, c){
   const alerts = (project.tasks || []).map(t=>{
     const ds = getDeadlineStatus(t);
     const cmp = getPlanComparison(t);
-    const dep = getDependencyInfo(t);
     const items = [];
     if(ds.overdue) items.push({ text:`Quá hạn nhưng chưa hoàn thành: ${formatDeadline(t.deadline_at)}`, color:c.red, icon:'bell-ringing' });
     else if(ds.dueSoon) items.push({ text:`Còn dưới 2 ngày đến hạn: ${formatDeadline(t.deadline_at)}`, color:c.amber, icon:'bell-ringing' });
-    if(dep.blocked) items.push({ text:`Công việc phụ thuộc chưa xong: ${dep.unfinished.map(x=>x.name).join(', ')}`, color:c.amber, icon:'git-branch' });
     if(cmp.isLate) items.push({ text:cmp.status, color:c.red, icon:'calendar-exclamation' });
     return items.length ? { task:t, items } : null;
   }).filter(Boolean);
   if(!alerts.length){
-    return `<div style="background:${c.card};border:1px solid ${c.border};border-radius:16px;padding:16px;margin-bottom:20px;${cardEffect()}"><h3 style="margin:0 0 8px;font-size:17px;font-weight:650;"><i class="ti ti-bell-check" style="vertical-align:-2px;margin-right:6px;color:${c.green};"></i>Cảnh báo dự án</h3><p style="margin:0;color:${c.sub};font-size:13px;">Hiện chưa có công việc quá hạn, sắp đến hạn, chậm kế hoạch hoặc bị chặn bởi công việc phụ thuộc.</p></div>`;
+    return `<div style="background:${c.card};border:1px solid ${c.border};border-radius:16px;padding:16px;margin-bottom:20px;${cardEffect()}"><h3 style="margin:0 0 8px;font-size:17px;font-weight:650;"><i class="ti ti-bell-check" style="vertical-align:-2px;margin-right:6px;color:${c.green};"></i>Cảnh báo dự án</h3><p style="margin:0;color:${c.sub};font-size:13px;">Hiện chưa có công việc quá hạn, sắp đến hạn hoặc chậm kế hoạch.</p></div>`;
   }
   return `<div style="background:${c.card};border:1px solid ${c.red};border-radius:16px;padding:16px;margin-bottom:20px;${cardEffect()}"><h3 style="margin:0 0 10px;font-size:17px;font-weight:650;color:${c.red};"><i class="ti ti-bell-ringing" style="vertical-align:-2px;margin-right:6px;"></i>Cảnh báo cần xử lý</h3><div style="display:grid;gap:8px;">${alerts.slice(0,8).map(a=>`<div style="display:flex;gap:8px;align-items:flex-start;font-size:13px;color:${c.text};"><div style="display:flex;gap:5px;margin-top:2px;flex-shrink:0;">${a.items.slice(0,3).map(item=>`<i class="ti ti-${item.icon}" style="color:${item.color};"></i>`).join('')}</div><div><b>${escapeHtml(a.task.name)}</b><div style="display:grid;gap:3px;margin-top:4px;">${a.items.map(item=>`<span style="color:${item.color};display:flex;align-items:flex-start;gap:5px;"><i class="ti ti-${item.icon}" style="margin-top:1px;flex-shrink:0;"></i>${escapeHtml(item.text)}</span>`).join('')}</div></div></div>`).join('')}${alerts.length>8?`<p style="margin:4px 0 0;color:${c.sub};font-size:12px;">Còn ${alerts.length-8} cảnh báo khác. Dùng bộ lọc nhanh để xem đầy đủ.</p>`:''}</div></div>`;
 }
@@ -1940,7 +1933,7 @@ function renderProjectList(list, c){
   const cards = list.map(p=>{ const s=projectStats(p); const alerts=projectDeadlineAlerts(p); const owner=isOwner(p); return `<div data-action="open" data-id="${p.id}" style="background:${c.card}; border:1px solid ${owner?c.accent:c.border}; border-radius:16px; padding:18px; cursor:pointer; ${cardEffect()}">
     <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;"><div><p style="margin:0; font-size:17px; font-weight:820; color:${c.text}; line-height:1.35;">${escapeHtml(p.name)}</p><p style="margin:5px 0 0; font-size:13px; font-weight:700; color:${c.sub};"><i class="ti ti-user-circle" style="font-size:14px; vertical-align:-2px; margin-right:4px;"></i>${p.manager ? escapeHtml(p.manager) : 'Chưa đặt người quản lý'}</p><p style="margin:5px 0 0; font-size:12px; font-weight:760; color:${owner?c.accent:c.sub};"><i class="ti ti-${owner?'edit':'eye'}" style="vertical-align:-2px;"></i> ${owner?'Dự án của tôi - được sửa':'Chỉ xem/copy'} · ${escapeHtml(p.owner_email || 'không rõ email')}</p></div><span style="font-size:13px; font-weight:850; color:${c.accent}; background:${theme==='dark'?'rgba(10,22,38,0.58)':'rgba(255,255,255,0.72)'}; border:1px solid ${c.border}; border-radius:980px; padding:5px 8px; line-height:1;">${s.percent}%</span></div>
     <div style="height:6px; background:${c.border}; border-radius:4px; margin:12px 0 8px; overflow:hidden;"><div style="height:100%; width:${s.percent}%; background:${c.accent}; border-radius:4px;"></div></div>
-    <p style="margin:0; font-size:12px; font-weight:720; color:${c.sub}; display:flex; align-items:center; justify-content:space-between; gap:8px;"><span>${s.done}/${s.total} công việc hoàn thành</span>${alerts ? `<span title="Có ${alerts} cảnh báo deadline/kế hoạch/phụ thuộc" style="color:${c.red}; font-weight:850; display:flex; align-items:center; gap:4px;"><i class="ti ti-bell-ringing"></i>${alerts}</span>` : ''}</p>
+    <p style="margin:0; font-size:12px; font-weight:720; color:${c.sub}; display:flex; align-items:center; justify-content:space-between; gap:8px;"><span>${s.done}/${s.total} công việc hoàn thành</span>${alerts ? `<span title="Có ${alerts} cảnh báo deadline/kế hoạch" style="color:${c.red}; font-weight:850; display:flex; align-items:center; gap:4px;"><i class="ti ti-bell-ringing"></i>${alerts}</span>` : ''}</p>
   </div>`; }).join('');
   return `<h2 style="margin:0 0 14px; font-size:18px; font-weight:600;"><i class="ti ti-folders" style="font-size:18px; vertical-align:-2px; margin-right:6px;"></i>Danh mục dự án</h2>${list.length ? `<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(260px,1fr)); gap:14px;">${cards}</div>` : `<p style="color:${c.sub}; font-size:15px; padding:2rem 0; text-align:center; background:${c.card}; border:1px solid ${c.border}; border-radius:16px;">Chưa có dự án nào trong bộ lọc này.</p>`}`;
 }
@@ -1961,10 +1954,6 @@ function renderProjectDetail(project, c){
     const deadlineText=formatDeadline(t.deadline_at);
     const cmp = getPlanComparison(t);
     const ext = getTaskExt(t);
-    const depInfo = getDependencyInfo(t);
-    const dependencyIds = ext.depends_on || [];
-    const dependencyOptions = tasks.filter(x=>x.id!==t.id).map(dep=>`<option value="${dep.id}" ${dependencyIds.includes(dep.id)?'selected':''}>${escapeHtml(dep.name)}${dep.done?' (đã xong)':' (chưa xong)'}</option>`).join('');
-    const dependencyNames = depInfo.unfinished.map(x=>x.name).join(', ');
     const dragTitle = canDragSort ? 'Nhấn giữ và kéo để sắp xếp công việc' : (owner ? 'Chỉ kéo-thả khi đang ở bộ lọc Tất cả' : 'Chỉ chủ dự án mới được sắp xếp');
     return `<div class="task-row-virtual ${expanded?'is-expanded':''}" data-task-row="${t.id}" draggable="${canDragSort?'true':'false'}" style="border-bottom:1px solid ${c.border}; cursor:${canDragSort?'grab':'default'};">
     <div style="display:flex; align-items:center; gap:8px; padding:14px 4px; flex-wrap:wrap;">
@@ -1975,7 +1964,6 @@ function renderProjectDetail(project, c){
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:5px;">
           ${deadlineText ? `<span class="task-muted-text" style="font-size:12px; color:${ds.warn ? c.red : 'var(--project-readable-muted)'}; display:inline-flex; align-items:center; gap:5px;"><i class="ti ti-calendar-time"></i>Hạn: ${deadlineText}</span>` : `<span class="task-muted-text" style="font-size:12px;color:var(--project-readable-muted);display:inline-flex;align-items:center;gap:5px;"><i class="ti ti-calendar-off"></i>Chưa có hạn</span>`}
           ${planBadgeHtml(c, cmp)}
-          ${depInfo.blocked ? `<span title="Công việc phụ thuộc chưa xong: ${escapeHtml(dependencyNames)}" style="font-size:11px;font-weight:700;padding:3px 9px;border-radius:980px;background:${c.amber};color:#fff;white-space:nowrap;display:inline-flex;align-items:center;gap:4px;"><i class="ti ti-git-branch" style="font-size:13px;"></i>Phụ thuộc chưa xong</span>` : ''}
         </div>
       </div>
       <div style="width:190px; min-width:150px; flex:0 1 190px;">
@@ -1983,7 +1971,6 @@ function renderProjectDetail(project, c){
         <input id="task-doc-no-${t.id}" type="text" data-action="doc_no" data-id="${t.id}" value="${escapeHtml(ext.doc_no || '')}" ${owner?'':'readonly'} placeholder="Nhập số hiệu..." style="width:100%; box-sizing:border-box; font-size:13px; padding:7px 9px; border:1px solid ${c.border}; border-radius:8px; background:${c.inputBg}; color:${c.text}; cursor:${owner?'text':'not-allowed'};"/>
       </div>
       ${ds.warn ? `<span title="${ds.overdue?'Quá hạn nhưng chưa hoàn thành':'Còn dưới 2 ngày đến hạn'}" style="width:30px; height:30px; border-radius:50%; background:${ds.overdue?c.red:c.amber}; color:#fff; display:flex; align-items:center; justify-content:center; flex-shrink:0;"><i class="ti ti-bell-ringing" style="font-size:17px;"></i></span>` : ''}
-      ${depInfo.blocked ? `<span title="Công việc phụ thuộc chưa xong: ${escapeHtml(dependencyNames)}" style="width:30px; height:30px; border-radius:50%; background:${c.amber}; color:#fff; display:flex; align-items:center; justify-content:center; flex-shrink:0;"><i class="ti ti-git-branch" style="font-size:17px;"></i></span>` : ''}
       <span style="font-size:12px; font-weight:500; padding:4px 12px; border-radius:980px; background:${t.done?c.green:c.amber}; color:#fff;white-space:nowrap;">${t.done?'Hoàn thành':'Chưa xong'}</span>
       <button data-action="expand" data-id="${t.id}" style="border:none; background:none; color:${c.sub}; cursor:pointer; padding:4px;"><i class="ti ti-chevron-${expanded?'up':'down'}" style="font-size:18px;"></i></button>
       <button data-action="deltask" data-id="${t.id}" ${owner?'':'disabled'} style="border:none; background:none; color:${owner?c.sub:c.border}; cursor:${owner?'pointer':'not-allowed'}; padding:4px;"><i class="ti ti-trash" style="font-size:17px;"></i></button>
@@ -2003,13 +1990,6 @@ function renderProjectDetail(project, c){
         </div>
         <p style="margin:10px 0 0;font-size:12px;color:${cmp.isLate?c.red:c.sub};line-height:1.5;">${escapeHtml(cmp.status)}${ext.plan_start&&ext.plan_end?` · KH: ${formatDateOnly(ext.plan_start)} - ${formatDateOnly(ext.plan_end)}`:''}${ext.actual_start||ext.actual_end?` · TT: ${formatDateOnly(ext.actual_start)||'...'} - ${formatDateOnly(ext.actual_end)||'...'}`:''}</p>
       </div>
-      <div style="background:${depInfo.blocked?c.softRed:c.info};border:1px solid ${depInfo.blocked?c.amber:c.border};border-radius:12px;padding:12px;">
-        <h4 style="margin:0 0 8px;font-size:15px;font-weight:650;"><i class="ti ti-git-branch" style="vertical-align:-2px;margin-right:5px;color:${depInfo.blocked?c.amber:c.accent};"></i>Công việc phụ thuộc</h4>
-        <select data-action="depends_on" data-id="${t.id}" multiple ${owner?'':'disabled'} style="width:100%;min-height:92px;box-sizing:border-box;font-size:13px;padding:8px 10px;border:1px solid ${depInfo.blocked?c.amber:c.border};border-radius:10px;background:${c.inputBg};color:${c.text};">
-          ${dependencyOptions || '<option disabled>Chưa có công việc khác để chọn phụ thuộc</option>'}
-        </select>
-        <p style="margin:7px 0 0;font-size:12px;color:${depInfo.blocked?c.amber:c.sub};line-height:1.5;">${depInfo.blocked?`Cảnh báo dây chuyền: các việc phụ thuộc chưa xong gồm ${escapeHtml(dependencyNames)}.`:'Giữ Ctrl để chọn nhiều công việc phụ thuộc. Nếu việc phụ thuộc chưa hoàn thành, công việc này sẽ hiện cảnh báo dây chuyền.'}</p>
-      </div>
       <div><label style="font-size:12px; color:${c.sub}; display:block; margin-bottom:6px;">Nội dung chi tiết</label><textarea data-action="notes" data-id="${t.id}" ${owner?'':'readonly'} placeholder="Mô tả chi tiết công việc, ghi chú tiến độ, vấn đề phát sinh..." style="width:100%; min-height:90px; resize:vertical; font-size:14px; font-family:inherit; padding:10px 12px; border:1px solid ${c.border}; border-radius:10px; background:${c.inputBg}; color:${c.text}; box-sizing:border-box;">${escapeHtml(stripInternalTaskNotes(t.notes||''))}</textarea></div>
     </div>` : ''}
   </div>`;
@@ -2028,7 +2008,7 @@ function renderProjectDetail(project, c){
           <h3 style="margin:0; font-size:15px; font-weight:700; letter-spacing:0; display:flex; align-items:center; gap:6px;"><i class="ti ti-layout-sidebar-left" style="font-size:17px; color:${c.accent};"></i>Tổng quan</h3>
           <span style="font-size:12px; font-weight:700; color:#fff; background:${c.accent}; border-radius:980px; padding:4px 8px; white-space:nowrap;">${s.percent}%</span>
         </div>
-        <div class="project-stat-list">${[['Tổng công việc',s.total,c.text],['Đã hoàn thành',s.done,c.green],['Chưa hoàn thành',s.pending,c.amber],['Tiến độ',s.percent+'%',c.accent],['Quá hạn',alertSummary.overdue,c.red],['Sắp đến hạn',alertSummary.dueSoon,c.amber],['Phụ thuộc chưa xong',alertSummary.dependencyBlocked,c.amber],['Chậm kế hoạch',alertSummary.latePlan,c.red],['Thiếu kế hoạch',alertSummary.missingPlan,c.amber]].map(([label,val,col],idx,arr)=>`<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:9px 2px; border-bottom:${idx===arr.length-1?'none':'1px solid '+(theme==='dark'?'rgba(232,244,255,0.30)':'rgba(255,255,255,0.72)')}; min-height:34px;"><span class="project-stat-label" style="font-size:12.5px; font-weight:880; line-height:1.25;">${label}</span><strong style="font-size:20px; font-weight:850; color:${col}; line-height:1; white-space:nowrap; letter-spacing:0; text-shadow:0 1px 2px ${theme==='dark'?'rgba(0,0,0,0.48)':'rgba(255,255,255,0.60)'};">${val}</strong></div>`).join('')}</div>
+        <div class="project-stat-list">${[['Tổng công việc',s.total,c.text],['Đã hoàn thành',s.done,c.green],['Chưa hoàn thành',s.pending,c.amber],['Tiến độ',s.percent+'%',c.accent],['Quá hạn',alertSummary.overdue,c.red],['Sắp đến hạn',alertSummary.dueSoon,c.amber],['Chậm kế hoạch',alertSummary.latePlan,c.red],['Thiếu kế hoạch',alertSummary.missingPlan,c.amber]].map(([label,val,col],idx,arr)=>`<div style="display:flex; align-items:center; justify-content:space-between; gap:10px; padding:9px 2px; border-bottom:${idx===arr.length-1?'none':'1px solid '+(theme==='dark'?'rgba(232,244,255,0.30)':'rgba(255,255,255,0.72)')}; min-height:34px;"><span class="project-stat-label" style="font-size:12.5px; font-weight:880; line-height:1.25;">${label}</span><strong style="font-size:20px; font-weight:850; color:${col}; line-height:1; white-space:nowrap; letter-spacing:0; text-shadow:0 1px 2px ${theme==='dark'?'rgba(0,0,0,0.48)':'rgba(255,255,255,0.60)'};">${val}</strong></div>`).join('')}</div>
       </aside>
       <section class="project-main-stack">
 
@@ -2168,14 +2148,6 @@ function attachEvents(project){
       inp.addEventListener('click', e=>e.stopPropagation());
       inp.onchange=()=>{ if(owner) updateTaskExt(inp.dataset.id, { [field]: inp.value || '' }); };
     });
-  });
-  root.querySelectorAll('[data-action="depends_on"]').forEach(sel=>{
-    sel.addEventListener('click', e=>e.stopPropagation());
-    sel.onchange=()=>{
-      if(!owner) return;
-      const ids = Array.from(sel.selectedOptions || []).map(o=>o.value).filter(Boolean);
-      updateTaskExt(sel.dataset.id, { depends_on: ids });
-    };
   });
   const fundingSource = root.querySelector('[data-action="funding_source"]');
   if(fundingSource){
