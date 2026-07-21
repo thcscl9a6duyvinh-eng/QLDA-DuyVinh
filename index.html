@@ -1074,6 +1074,7 @@ function normalizeTaskExtPayload(payload){
     : (p.depends_on ? String(p.depends_on).split(',') : []);
   const depends_on = [...new Set(rawDepends.map(x => String(x || '').trim()).filter(Boolean))];
   return {
+    doc_no: String(p.doc_no || '').trim(),
     plan_start: normalizeDateOnly(p.plan_start),
     plan_end: normalizeDateOnly(p.plan_end),
     actual_start: normalizeDateOnly(p.actual_start),
@@ -1225,7 +1226,7 @@ function projectFilterDefinitions(project){
     ['no_deadline','Chưa có hạn',count('no_deadline'),'calendar-off']
   ];
 }
-async function updateTaskExt(taskId, changes){
+async function updateTaskExt(taskId, changes, options={}){
   let task = null;
   for(const p of projects){
     task = (p.tasks || []).find(x => x.id === taskId);
@@ -1238,7 +1239,7 @@ async function updateTaskExt(taskId, changes){
   const ganttPayload = readGanttSyncFromNotes(task.notes || '');
   if(ganttPayload) nextNotes = setGanttSyncInNotes(nextNotes, ganttPayload);
   await updateTask(taskId, { notes: nextNotes });
-  setTimeout(()=>{ if(currentProjectId) render(); }, 0);
+  if(options.rerender !== false) setTimeout(()=>{ if(currentProjectId) render(); }, 0);
 }
 function planBadgeHtml(c, cmp){
   const bg = cmp.colorType === 'late' ? c.red : (cmp.colorType === 'early' ? c.green : (cmp.colorType === 'missing' ? c.amber : c.accent));
@@ -1966,16 +1967,20 @@ function renderProjectDetail(project, c){
     const dependencyNames = depInfo.unfinished.map(x=>x.name).join(', ');
     const dragTitle = canDragSort ? 'Nhấn giữ và kéo để sắp xếp công việc' : (owner ? 'Chỉ kéo-thả khi đang ở bộ lọc Tất cả' : 'Chỉ chủ dự án mới được sắp xếp');
     return `<div class="task-row-virtual ${expanded?'is-expanded':''}" data-task-row="${t.id}" draggable="${canDragSort?'true':'false'}" style="border-bottom:1px solid ${c.border}; cursor:${canDragSort?'grab':'default'};">
-    <div style="display:flex; align-items:center; gap:8px; padding:14px 4px;">
+    <div style="display:flex; align-items:center; gap:8px; padding:14px 4px; flex-wrap:wrap;">
       <span data-task-drag-handle title="${dragTitle}" style="width:26px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:${canDragSort?c.sub:c.border};cursor:${canDragSort?'grab':'not-allowed'};flex-shrink:0;"><i class="ti ti-grip-vertical" style="font-size:18px;"></i></span>
       <input type="checkbox" data-action="toggle" data-id="${t.id}" ${t.done?'checked':''} ${owner?'':'disabled'} style="width:20px; height:20px; cursor:${owner?'pointer':'not-allowed'}; flex-shrink:0; accent-color:${c.accent};"/>
-      <div style="flex:1; min-width:0; cursor:pointer;" data-action="expand" data-id="${t.id}">
+      <div style="flex:1 1 260px; min-width:0; cursor:pointer;" data-action="expand" data-id="${t.id}">
         <div class="task-title-text" style="font-size:15px; ${t.done?`opacity:.62; text-decoration:line-through;`:''}">${escapeHtml(t.name)}</div>
         <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:5px;">
           ${deadlineText ? `<span class="task-muted-text" style="font-size:12px; color:${ds.warn ? c.red : 'var(--project-readable-muted)'}; display:inline-flex; align-items:center; gap:5px;"><i class="ti ti-calendar-time"></i>Hạn: ${deadlineText}</span>` : `<span class="task-muted-text" style="font-size:12px;color:var(--project-readable-muted);display:inline-flex;align-items:center;gap:5px;"><i class="ti ti-calendar-off"></i>Chưa có hạn</span>`}
           ${planBadgeHtml(c, cmp)}
           ${depInfo.blocked ? `<span title="Công việc phụ thuộc chưa xong: ${escapeHtml(dependencyNames)}" style="font-size:11px;font-weight:700;padding:3px 9px;border-radius:980px;background:${c.amber};color:#fff;white-space:nowrap;display:inline-flex;align-items:center;gap:4px;"><i class="ti ti-git-branch" style="font-size:13px;"></i>Phụ thuộc chưa xong</span>` : ''}
         </div>
+      </div>
+      <div style="width:190px; min-width:150px; flex:0 1 190px;">
+        <label class="task-muted-text" for="task-doc-no-${t.id}" style="font-size:11px; font-weight:750; display:block; margin-bottom:4px;">Số hiệu văn bản</label>
+        <input id="task-doc-no-${t.id}" type="text" data-action="doc_no" data-id="${t.id}" value="${escapeHtml(ext.doc_no || '')}" ${owner?'':'readonly'} placeholder="Nhập số hiệu..." style="width:100%; box-sizing:border-box; font-size:13px; padding:7px 9px; border:1px solid ${c.border}; border-radius:8px; background:${c.inputBg}; color:${c.text}; cursor:${owner?'text':'not-allowed'};"/>
       </div>
       ${ds.warn ? `<span title="${ds.overdue?'Quá hạn nhưng chưa hoàn thành':'Còn dưới 2 ngày đến hạn'}" style="width:30px; height:30px; border-radius:50%; background:${ds.overdue?c.red:c.amber}; color:#fff; display:flex; align-items:center; justify-content:center; flex-shrink:0;"><i class="ti ti-bell-ringing" style="font-size:17px;"></i></span>` : ''}
       ${depInfo.blocked ? `<span title="Công việc phụ thuộc chưa xong: ${escapeHtml(dependencyNames)}" style="width:30px; height:30px; border-radius:50%; background:${c.amber}; color:#fff; display:flex; align-items:center; justify-content:center; flex-shrink:0;"><i class="ti ti-git-branch" style="font-size:17px;"></i></span>` : ''}
@@ -2156,6 +2161,7 @@ function attachEvents(project){
   attachProjectTaskDragSort(project);
   root.querySelectorAll('[data-action="expand"]').forEach(el=> el.onclick=()=>{ const id=el.dataset.id; expandedTaskId = expandedTaskId===id ? null : id; render(); });
   root.querySelectorAll('[data-action="notes"]').forEach(ta=>{ let timer; ta.addEventListener('click', e=>e.stopPropagation()); ta.oninput=()=>{ if(!owner) return; clearTimeout(timer); const id=ta.dataset.id; const val=ta.value; timer=setTimeout(()=>{ const cur=(project.tasks||[]).find(x=>x.id===id); updateTask(id, { notes: mergeTaskInternalInNotes(val, cur ? cur.notes : '') }); }, 600); }; });
+  root.querySelectorAll('[data-action="doc_no"]').forEach(inp=>{ let timer; inp.addEventListener('click', e=>e.stopPropagation()); inp.oninput=()=>{ if(!owner) return; clearTimeout(timer); const id=inp.dataset.id; const val=inp.value; timer=setTimeout(()=> updateTaskExt(id, { doc_no: val }, { rerender:false }), 600); }; });
   root.querySelectorAll('[data-action="deadline"]').forEach(inp=>{ inp.addEventListener('click', e=>e.stopPropagation()); inp.onchange=async()=>{ if(owner){ await updateTask(inp.dataset.id, { deadline_at: inp.value ? new Date(inp.value).toISOString() : null }); render(); } }; });
   ['plan_start','plan_end','actual_start','actual_end'].forEach(field=>{
     root.querySelectorAll(`[data-action="${field}"]`).forEach(inp=>{
