@@ -1091,6 +1091,14 @@ function setGanttSyncInNotes(userNotes, payload){
   if(!encoded) return clean;
   return clean + '\n\n' + GANTT_SYNC_PREFIX + encoded + GANTT_SYNC_SUFFIX;
 }
+function clearGanttProgressSyncFromNotes(notes){
+  const payload = readGanttSyncFromNotes(notes || '');
+  if(!payload || !Object.prototype.hasOwnProperty.call(payload, 'progress')) return notes || '';
+  const nextPayload = { ...payload };
+  delete nextPayload.progress;
+  delete nextPayload.progressManual;
+  return setGanttSyncInNotes(notes || '', nextPayload);
+}
 function preserveGanttSyncInNotes(userNotes, oldFullNotes){
   const oldPayload = readGanttSyncFromNotes(oldFullNotes || '');
   return oldPayload ? setGanttSyncInNotes(userNotes, oldPayload) : String(userNotes || '');
@@ -1790,9 +1798,25 @@ async function updateTask(taskId, changes){
 
 async function toggleTask(projectId, taskId, currentDone){
   const p=projects.find(x=>x.id===projectId); if(!isOwner(p)) return;
-  touchLocalTask(taskId, { done: !currentDone });
+  const task = (p.tasks || []).find(x => x.id === taskId);
+  const nextDone = !currentDone;
+  const changes = { done: nextDone };
+  const linkedGanttTask = ganttTasks.find(t => t.projectTaskId === taskId);
+  const savedGantt = readGanttSyncFromNotes((task && task.notes) || '') || {};
+  const hasZeroManualProgress =
+    (linkedGanttTask && linkedGanttTask.progressManual && clampGanttProgress(linkedGanttTask.progress) === 0) ||
+    (savedGantt && savedGantt.progressManual === true && clampGanttProgress(savedGantt.progress) === 0);
+  if(task && hasZeroManualProgress){
+    changes.notes = clearGanttProgressSyncFromNotes(task.notes || '');
+    if(linkedGanttTask){
+      linkedGanttTask.progressManual = false;
+      linkedGanttTask.progress = defaultLinkedGanttProgress({ ...task, done: nextDone });
+    }
+  }
+  touchLocalTask(taskId, changes);
+  if(window._syncGanttFromProject) window._syncGanttFromProject();
   render();
-  await updateTask(taskId, { done: !currentDone });
+  await updateTask(taskId, changes);
 }
 async function deleteTask(projectId, taskId){
   const p=projects.find(x=>x.id===projectId); if(!isOwner(p)) return;
@@ -2446,12 +2470,16 @@ async function saveGanttToSupabase(){
     if(!gt.projectTaskId) continue;
     const pt = projectTasks.find(x => x.id === gt.projectTaskId);
     if(!pt) continue;
+    const keepManualProgress = gt.progressManual === true;
     const payload = {
       wbs: gt.wbs || '',
-      progress: Math.min(100, Math.max(0, Number(gt.progress) || 0)),
       unit: ganttUnit(gt),
       notes: gt.notes || ''
     };
+    if(keepManualProgress){
+      payload.progress = clampGanttProgress(gt.progress);
+      payload.progressManual = true;
+    }
     const nextNotes = setGanttSyncInNotes(pt.notes || '', payload);
     if(nextNotes !== (pt.notes || '')){
       touchLocalTask(pt.id, { notes: nextNotes });
@@ -2490,6 +2518,28 @@ function daysBetween(a,b){ return Math.round((new Date(b)-new Date(a))/(86400000
 function addDays(d,n){ const r=new Date(d); r.setDate(r.getDate()+n); return r; }
 function toInputDate(d){ if(!d) return ''; const dt=new Date(d); if(isNaN(dt)) return ''; return dt.toISOString().slice(0,10); }
 function todayStr(){ return new Date().toISOString().slice(0,10); }
+function clampGanttProgress(value){
+  return Math.min(100, Math.max(0, Number(value) || 0));
+}
+function hasSavedGanttProgress(saved){
+  return !!(saved && Object.prototype.hasOwnProperty.call(saved, 'progress') && saved.progress !== null && saved.progress !== '');
+}
+function defaultLinkedGanttProgress(projectTask){
+  return projectTask && projectTask.done ? 100 : 0;
+}
+function isSavedGanttProgressManual(projectTask, saved){
+  if(!hasSavedGanttProgress(saved)) return false;
+  if(saved.progressManual === true) return true;
+  if(saved.progressManual === false) return false;
+  const progress = clampGanttProgress(saved.progress);
+  if(projectTask && projectTask.done && progress === 0) return false;
+  return progress !== defaultLinkedGanttProgress(projectTask);
+}
+function resolveLinkedGanttProgress(projectTask, saved, ganttTask){
+  if(ganttTask && ganttTask.progressManual) return clampGanttProgress(ganttTask.progress);
+  if(isSavedGanttProgressManual(projectTask, saved)) return clampGanttProgress(saved.progress);
+  return defaultLinkedGanttProgress(projectTask);
+}
 
 // --- Stats ---
 function ganttStats(){
@@ -2771,7 +2821,7 @@ function renderGanttTab(){
               </td>
               <td style="${tdCenterStyle}">${days}</td>
               <td style="${tdCenterStyle}">
-                <input type="number" min="0" max="100" data-gantt-edit-field="progress" value="${prog}" style="width:60px;font-size:12px;padding:4px 6px;border:1px solid ${c.border};border-radius:6px;background:${c.inputBg};color:${c.text};"/>
+                <input type="number" min="0" max="100" data-gantt-edit-field="progress" data-gantt-original-progress="${prog}" value="${prog}" style="width:60px;font-size:12px;padding:4px 6px;border:1px solid ${c.border};border-radius:6px;background:${c.inputBg};color:${c.text};"/>
               </td>
               <td style="${tdStyle}">
                 <input data-gantt-edit-field="notes" value="${escapeHtml(t.notes||'')}" style="width:100%;min-width:100px;font-size:12px;padding:4px 6px;border:1px solid ${c.border};border-radius:6px;background:${c.inputBg};color:${c.text};"/>
@@ -3313,6 +3363,7 @@ function attachGanttEvents(){
       const t=ganttTasks.find(x=>x.id===id);
       if(t){
         const nameEl = row.querySelector('[data-gantt-edit-field="name"]');
+        const progressEl = row.querySelector('[data-gantt-edit-field="progress"]');
         const isLinkedTask = !!t.projectTaskId;
         const startVal = isLinkedTask ? (t.start || '') : get('start');
         const endVal = isLinkedTask ? (t.end || '') : get('end');
@@ -3324,7 +3375,11 @@ function attachGanttEvents(){
         t.unit=get('unit');
         if(nameEl) t.name=nameEl.value;
         if(!isLinkedTask){ t.start=startVal; t.end=endVal; }
-        t.progress=Math.min(100,Math.max(0,parseInt(get('progress'))||0));
+        const nextProgress = clampGanttProgress(parseInt(get('progress')) || 0);
+        if(isLinkedTask && progressEl && String(nextProgress) !== String(progressEl.dataset.ganttOriginalProgress || '')){
+          t.progressManual = true;
+        }
+        t.progress=nextProgress;
         t.notes=get('notes');
       }
       ganttEditId=null; ganttSave(); refreshGanttSection();
@@ -3367,7 +3422,9 @@ function attachGanttEvents(){
   const clearBtn = section.querySelector('#gantt-clear-btn');
   if(clearBtn) clearBtn.onclick=()=>{
     if(!confirm('Xóa toàn bộ WBS, đơn vị thực hiện, tiến độ và ghi chú trong Gantt? Công việc liên kết từ dự án vẫn được giữ lại; ngày Gantt vẫn lấy từ kế hoạch/thực tế của danh sách công việc dự án.')) return;
-    ganttTasks = ganttTasks.map(t => t.projectTaskId ? { ...t, wbs:'', unit:'', progress:0, notes:'' } : t).filter(t => !!t.projectTaskId);
+    const project = projects.find(p => p.id === currentProjectId);
+    const projectTaskById = new Map(((project && project.tasks) || []).map(pt => [pt.id, pt]));
+    ganttTasks = ganttTasks.map(t => t.projectTaskId ? { ...t, wbs:'', unit:'', progress:defaultLinkedGanttProgress(projectTaskById.get(t.projectTaskId)), progressManual:false, notes:'' } : t).filter(t => !!t.projectTaskId);
     ganttSave(); refreshGanttSection();
   };
 }
@@ -3382,7 +3439,7 @@ function refreshGanttSection(){
 // --- Sync từ project tracker sang Gantt ---
 // Gọi sau mỗi lần loadAll() hoặc khi currentProjectId thay đổi.
 // Logic:
-//   1. Công việc trong project nhưng chưa có trong ganttTasks → thêm mới (không có ngày, tiến độ 0)
+//   1. Công việc trong project nhưng chưa có trong ganttTasks → thêm mới, ngày lấy từ KH/TT, tiến độ mặc định theo trạng thái hoàn thành
 //   2. Công việc đã có trong ganttTasks (match theo task.id lưu trong ganttTask.projectTaskId) → cập nhật tên nếu đổi
 //   3. Công việc đã xóa khỏi project → xóa luôn khỏi ganttTasks
 //   4. Công việc tự thêm thẳng vào Gantt (không có projectTaskId) → giữ nguyên
@@ -3441,6 +3498,7 @@ function syncGanttFromProject(){
     const schedule = getTaskGanttSchedule(pt);
     if(linkedMap[pt.id]){
       const gt = linkedMap[pt.id];
+      const progressManual = !!gt.progressManual || isSavedGanttProgressManual(pt, saved);
       gt.name = pt.name;
       if(saved.wbs !== undefined) gt.wbs = saved.wbs || '';
       gt.start = schedule.start || '';
@@ -3448,10 +3506,12 @@ function syncGanttFromProject(){
       gt.scheduleSource = schedule.source || '';
       gt.scheduleStartSource = schedule.startSource || '';
       gt.scheduleEndSource = schedule.endSource || '';
-      if(saved.progress !== undefined) gt.progress = Math.min(100, Math.max(0, Number(saved.progress) || 0));
+      gt.progress = resolveLinkedGanttProgress(pt, saved, gt);
+      gt.progressManual = progressManual;
       if(saved.unit !== undefined) gt.unit = saved.unit || '';
       if(saved.notes !== undefined) gt.notes = saved.notes || '';
     }else{
+      const progressManual = isSavedGanttProgressManual(pt, saved);
       ganttTasks.push({
         id: uid(),
         projectTaskId: pt.id,
@@ -3462,7 +3522,8 @@ function syncGanttFromProject(){
         scheduleSource: schedule.source || '',
         scheduleStartSource: schedule.startSource || '',
         scheduleEndSource: schedule.endSource || '',
-        progress: Math.min(100, Math.max(0, Number(saved.progress) || 0)),
+        progress: resolveLinkedGanttProgress(pt, saved, null),
+        progressManual,
         unit: saved.unit || '',
         notes: saved.notes || ''
       });
