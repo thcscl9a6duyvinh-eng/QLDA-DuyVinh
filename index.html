@@ -416,7 +416,7 @@
     z-index: 1;
   }
   .dashboard-sidebar-credit {
-    font-size: 11.5px;
+    font-size: 13.5px;
     font-weight: 700;
     letter-spacing: 0.01em;
     line-height: 1.35;
@@ -425,12 +425,65 @@
   }
   .dashboard-sidebar-version {
     margin-top: 4px;
-    font-size: 10px;
+    font-size: 13px;
     font-weight: 650;
     letter-spacing: 0.02em;
     line-height: 1.35;
     color: rgba(239,247,255,0.82);
     text-shadow: 0 1px 2px rgba(0,0,0,0.30);
+  }
+  .dashboard-update-notice {
+    margin-top: 12px;
+    padding: 10px;
+    border: 1px solid rgba(255,235,178,0.42);
+    border-radius: 10px;
+    background: linear-gradient(135deg, rgba(255,235,178,0.18), rgba(143,208,255,0.12));
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.18), 0 10px 22px rgba(0,0,0,0.14);
+    display: grid;
+    gap: 8px;
+  }
+  .dashboard-update-title {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    color: #ffe3a3;
+    font-size: 12.5px;
+    font-weight: 850;
+    line-height: 1.3;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.38);
+  }
+  .dashboard-update-notes {
+    color: rgba(239,247,255,0.84);
+    font-size: 11.5px;
+    font-weight: 650;
+    line-height: 1.35;
+  }
+  .dashboard-update-btn {
+    width: 100%;
+    min-height: 34px;
+    border: 1px solid rgba(255,255,255,0.58);
+    border-radius: 9px;
+    background: linear-gradient(135deg, rgba(255,235,178,0.92), rgba(255,196,92,0.88));
+    color: #10213c;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    font-family: 'Be Vietnam Pro', 'Segoe UI', sans-serif;
+    font-size: 12.5px;
+    font-weight: 850;
+    box-shadow: 0 10px 20px rgba(0,0,0,0.18), inset 0 1px 0 rgba(255,255,255,0.74);
+  }
+  .dashboard-update-btn:hover {
+    filter: brightness(1.04);
+    transform: translateY(-1px);
+  }
+  .dashboard-update-btn:disabled {
+    cursor: wait;
+    opacity: 0.76;
+    transform: none;
   }
   .dashboard-nav-item {
     width: 100%;
@@ -907,6 +960,9 @@ const PROJECT_GROUP_OPTIONS = [
   { key:'qlda_xa', label:'QLDA các xã', icon:'building-community' },
   { key:'qlda_ban', label:'QLDA của Ban', icon:'building-bank' }
 ];
+const APP_VERSION = '1.0.0';
+const VERSION_MANIFEST_URL = 'version.json';
+const VERSION_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
 let db = null;
 let currentUser = null;
@@ -930,6 +986,9 @@ let showGanttView = false; // toggle giữa project tracker và gantt
 let onlineChannel = null;
 let onlineUsers = [];
 let showOnlinePanel = false;
+let appUpdateInfo = { available:false, version:APP_VERSION, notes:'', error:'', checkedAt:0 };
+let appUpdateChecking = false;
+let appUpdateTimer = null;
 
 // ============ GANTT STATE ============
 let ganttTasks = [];          // [{id, wbs, name, unit, start, end, progress, group}]
@@ -940,6 +999,86 @@ let ganttEditId = null;
 let ganttDragScrollX = 0;
 
 function escapeHtml(s){ const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+function versionParts(v){
+  const parts = String(v || '').trim().replace(/^v/i, '').split('.').map(x => parseInt(x, 10));
+  return [0, 1, 2].map(i => Number.isFinite(parts[i]) ? parts[i] : 0);
+}
+function compareVersions(a, b){
+  const aa = versionParts(a);
+  const bb = versionParts(b);
+  for(let i = 0; i < 3; i++){
+    if(aa[i] > bb[i]) return 1;
+    if(aa[i] < bb[i]) return -1;
+  }
+  return 0;
+}
+function versionManifestUrl(){
+  const url = new URL(VERSION_MANIFEST_URL, window.location.href);
+  url.searchParams.set('_', Date.now().toString());
+  return url.toString();
+}
+function renderUpdateNoticeHtml(){
+  if(!appUpdateInfo.available) return '';
+  const notes = appUpdateInfo.notes ? `<div class="dashboard-update-notes">${escapeHtml(appUpdateInfo.notes)}</div>` : '';
+  return `<div class="dashboard-update-notice" role="status" aria-live="polite">
+    <div class="dashboard-update-title"><i class="ti ti-bell-ringing" aria-hidden="true"></i><span>Có phiên bản mới ${escapeHtml(appUpdateInfo.version)}</span></div>
+    ${notes}
+    <button data-action="update-app-version" class="dashboard-update-btn" type="button"><i class="ti ti-refresh" aria-hidden="true"></i><span>Cập nhật phiên bản mới</span></button>
+  </div>`;
+}
+function attachVersionUpdateButton(){
+  const btn = root.querySelector('[data-action="update-app-version"]');
+  if(btn) btn.onclick = applyAppUpdate;
+}
+function refreshAppUpdateNotice(){
+  const holder = document.getElementById('appUpdateNoticeHolder');
+  if(!holder) return;
+  holder.innerHTML = renderUpdateNoticeHtml();
+  attachVersionUpdateButton();
+}
+async function checkForAppUpdate(){
+  if(appUpdateChecking) return;
+  appUpdateChecking = true;
+  const wasAvailable = appUpdateInfo.available;
+  try{
+    const res = await fetch(versionManifestUrl(), { cache:'no-store' });
+    if(!res.ok) throw new Error('Không đọc được version.json');
+    const manifest = await res.json();
+    const latest = String(manifest.version || '').trim();
+    if(!latest) throw new Error('version.json thiếu trường version');
+    appUpdateInfo = {
+      available: compareVersions(latest, APP_VERSION) > 0,
+      version: latest,
+      notes: String(manifest.notes || '').trim(),
+      error: '',
+      checkedAt: Date.now()
+    };
+    if(appUpdateInfo.available || wasAvailable) refreshAppUpdateNotice();
+  }catch(e){
+    appUpdateInfo = { ...appUpdateInfo, error: e.message || 'Không kiểm tra được phiên bản mới', checkedAt: Date.now() };
+  }finally{
+    appUpdateChecking = false;
+  }
+}
+function startAppVersionChecks(){
+  if(appUpdateTimer) return;
+  checkForAppUpdate();
+  appUpdateTimer = setInterval(checkForAppUpdate, VERSION_CHECK_INTERVAL_MS);
+  window.addEventListener('focus', checkForAppUpdate);
+  document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) checkForAppUpdate(); });
+}
+function applyAppUpdate(){
+  const btn = root.querySelector('[data-action="update-app-version"]');
+  if(btn){
+    btn.disabled = true;
+    btn.innerHTML = '<i class="ti ti-loader-2" aria-hidden="true"></i><span>Đang cập nhật...</span>';
+  }
+  const nextVersion = appUpdateInfo.version || APP_VERSION;
+  const url = new URL(window.location.href);
+  url.searchParams.set('v', nextVersion);
+  url.searchParams.set('updated', Date.now().toString());
+  window.location.replace(url.toString());
+}
 function nowIso(){ return new Date().toISOString(); }
 function isOwner(p){ return currentUser && p && p.owner_id === currentUser.id; }
 function userEmail(){ return currentUser && currentUser.email ? currentUser.email : ''; }
@@ -2022,7 +2161,8 @@ function render(){
       </nav>
       <div class="dashboard-sidebar-footer">
         <div class="dashboard-sidebar-credit">design by Duy Vĩnh</div>
-        <div class="dashboard-sidebar-version">Phiên bản 1.0.0</div>
+        <div class="dashboard-sidebar-version">Phiên bản ${escapeHtml(APP_VERSION)}</div>
+        <div id="appUpdateNoticeHolder">${renderUpdateNoticeHtml()}</div>
       </div>
     </aside>
     <main class="dashboard-main">
@@ -2288,6 +2428,7 @@ function attachEvents(project){
   attachOnlineUsersWidgetEvents();
   const signout=root.querySelector('[data-action="signout"]'); if(signout) signout.onclick=signOut;
   const reload=root.querySelector('[data-action="reload"]'); if(reload) reload.onclick=()=>loadAll({showLoading:true});
+  attachVersionUpdateButton();
   const importBtn=root.querySelector('[data-action="importlegacy"]'); if(importBtn) importBtn.onclick=importLegacyToMyAccount;
   root.querySelectorAll('[data-action="toggle-gantt"]').forEach(b=> b.onclick=()=>{ showGanttView=!showGanttView; render(); });
   root.querySelectorAll('[data-action="show-gantt"]').forEach(b=> b.onclick=()=>{ showGanttView=true; render(); });
@@ -3722,6 +3863,7 @@ window._clearGanttProgressOverride = clearGanttProgressOverride;
 
 render();
 init();
+startAppVersionChecks();
 // Không tự tải lại dữ liệu theo chu kỳ, tránh làm mất nội dung người dùng đang nhập.
 // Người dùng vẫn có thể bấm nút 'Làm mới' khi cần đồng bộ thủ công.
 setInterval(()=>{ if(currentProjectId && !isUserEditing() && !saving) render(); }, 60000);
