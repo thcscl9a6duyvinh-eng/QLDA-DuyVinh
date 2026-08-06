@@ -960,9 +960,13 @@ const PROJECT_GROUP_OPTIONS = [
   { key:'qlda_xa', label:'QLDA các xã', icon:'building-community' },
   { key:'qlda_ban', label:'QLDA của Ban', icon:'building-bank' }
 ];
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.1';
 const VERSION_MANIFEST_URL = 'version.json';
 const VERSION_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+const ADMIN_EMAILS = [
+  // Có thể thêm email admin ở đây nếu không dùng app_metadata trong Supabase.
+  // Ví dụ: 'ten.admin@coquan.gov.vn'
+];
 
 let db = null;
 let currentUser = null;
@@ -1081,6 +1085,16 @@ function applyAppUpdate(){
 }
 function nowIso(){ return new Date().toISOString(); }
 function isOwner(p){ return currentUser && p && p.owner_id === currentUser.id; }
+function normalizeEmail(email){ return String(email || '').trim().toLowerCase(); }
+function isAdminUser(){
+  if(!currentUser) return false;
+  const appMeta = currentUser.app_metadata || {};
+  const userMeta = currentUser.user_metadata || {};
+  const role = String(appMeta.role || appMeta.user_role || userMeta.role || '').trim().toLowerCase();
+  const email = normalizeEmail(userEmail());
+  return role === 'admin' || ADMIN_EMAILS.map(normalizeEmail).includes(email);
+}
+function canDeleteProject(p){ return !!p && (isOwner(p) || isAdminUser()); }
 function userEmail(){ return currentUser && currentUser.email ? currentUser.email : ''; }
 function displayUserName(){
   const meta = currentUser && currentUser.user_metadata ? currentUser.user_metadata : {};
@@ -1877,11 +1891,20 @@ async function addProject(name, manager, groupKey=DEFAULT_PROJECT_GROUP){
   saving=false; renderSaveText();
 }
 async function deleteProject(projectId){
-  const p = projects.find(x=>x.id===projectId); if(!p || !isOwner(p)) return;
-  if(!confirm('Xóa dự án này? Chỉ chủ dự án mới được xóa.')) return;
+  const p = projects.find(x=>x.id===projectId); if(!p || !canDeleteProject(p)) return;
+  const adminDeletingOther = isAdminUser() && !isOwner(p);
+  const ownerText = p.owner_email ? ` của tài khoản ${p.owner_email}` : '';
+  const message = adminDeletingOther
+    ? `Bạn đang dùng quyền admin để xóa dự án${ownerText}.\nHành động này sẽ xóa dự án và toàn bộ công việc. Tiếp tục?`
+    : 'Xóa dự án này và toàn bộ công việc?';
+  if(!confirm(message)) return;
   saving=true; renderSaveText();
   try{ const { error } = await db.from('projects').delete().eq('id', projectId); if(error) throw error; currentProjectId=null; await loadAll({showLoading:false}); }
-  catch(e){ console.error(e); setStatus(false, 'Không xóa được dự án: ' + (e.message || 'lỗi quyền hoặc kết nối.')); }
+  catch(e){
+    console.error(e);
+    const adminHint = adminDeletingOther ? ' Nếu đây là dự án của tài khoản khác, hãy kiểm tra đã chạy policy admin trong Supabase chưa.' : '';
+    setStatus(false, 'Không xóa được dự án: ' + (e.message || 'lỗi quyền hoặc kết nối.') + adminHint);
+  }
   saving=false; renderSaveText();
 }
 async function addTask(projectId, name){
@@ -2175,7 +2198,7 @@ function render(){
           <button data-action="toggle-gantt" class="dashboard-pill-btn" type="button"><i class="ti ti-chart-gantt" style="font-size:17px;"></i>${showGanttView?'Quay lại dự án':'Sơ đồ Gantt'}</button>
           <button data-action="theme" class="dashboard-icon-btn" type="button" aria-label="Chuyển chế độ sáng/tối"><i class="ti ti-${theme==='light'?'moon':'sun'}" style="font-size:18px;" aria-hidden="true"></i></button>
           <div id="onlineUsersWidget">${renderOnlineUsersWidgetContent()}</div>
-          <div class="dashboard-user-chip" title="${escapeHtml(displayUserName())}"><span class="dashboard-avatar">${escapeHtml(userInitial())}</span><strong>${escapeHtml(displayUserName())}</strong></div>
+          <div class="dashboard-user-chip" title="${escapeHtml(displayUserName())}"><span class="dashboard-avatar">${escapeHtml(userInitial())}</span><strong>${escapeHtml(displayUserName())}</strong>${isAdminUser()?`<span style="font-size:10px;font-weight:850;text-transform:uppercase;letter-spacing:0;border:1px solid ${c.border};border-radius:980px;padding:3px 6px;color:${c.accent};background:${c.info};"><i class="ti ti-shield-check" style="font-size:12px;vertical-align:-2px;"></i> Admin</span>`:''}</div>
           <button data-action="signout" class="dashboard-icon-btn" type="button" aria-label="Đăng xuất"><i class="ti ti-logout" style="font-size:18px;"></i></button>
         </div>
       </header>
@@ -2225,9 +2248,13 @@ function renderProjectCard(p, c){
   const s=projectStats(p);
   const alerts=projectDeadlineAlerts(p);
   const owner=isOwner(p);
+  const adminOther = isAdminUser() && !owner;
+  const accessIcon = owner ? 'edit' : (adminOther ? 'shield-check' : 'eye');
+  const accessText = owner ? 'Dự án của tôi - được sửa' : (adminOther ? 'Admin - được xóa' : 'Chỉ xem/copy');
+  const accessColor = owner || adminOther ? c.accent : c.sub;
   const group=getProjectGroupOption(p);
-  return `<div data-action="open" data-id="${p.id}" style="background:${c.card}; border:1px solid ${owner?c.accent:c.border}; border-radius:16px; padding:18px; cursor:pointer; ${cardEffect()}">
-    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;"><div><p style="margin:0; font-size:17px; font-weight:820; color:${c.text}; line-height:1.35;">${escapeHtml(p.name)}</p><p style="margin:5px 0 0; font-size:13px; font-weight:700; color:${c.sub};"><i class="ti ti-user-circle" style="font-size:14px; vertical-align:-2px; margin-right:4px;"></i>${p.manager ? escapeHtml(p.manager) : 'Chưa đặt người quản lý'}</p><p style="margin:5px 0 0; font-size:12px; font-weight:760; color:${c.accent};"><i class="ti ti-${group.icon}" style="vertical-align:-2px;"></i> ${escapeHtml(group.label)}</p><p style="margin:5px 0 0; font-size:12px; font-weight:760; color:${owner?c.accent:c.sub};"><i class="ti ti-${owner?'edit':'eye'}" style="vertical-align:-2px;"></i> ${owner?'Dự án của tôi - được sửa':'Chỉ xem/copy'} · ${escapeHtml(p.owner_email || 'không rõ email')}</p></div><span style="font-size:13px; font-weight:850; color:${c.accent}; background:${theme==='dark'?'rgba(10,22,38,0.58)':'rgba(255,255,255,0.72)'}; border:1px solid ${c.border}; border-radius:980px; padding:5px 8px; line-height:1;">${s.percent}%</span></div>
+  return `<div data-action="open" data-id="${p.id}" style="background:${c.card}; border:1px solid ${owner||adminOther?c.accent:c.border}; border-radius:16px; padding:18px; cursor:pointer; ${cardEffect()}">
+    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;"><div><p style="margin:0; font-size:17px; font-weight:820; color:${c.text}; line-height:1.35;">${escapeHtml(p.name)}</p><p style="margin:5px 0 0; font-size:13px; font-weight:700; color:${c.sub};"><i class="ti ti-user-circle" style="font-size:14px; vertical-align:-2px; margin-right:4px;"></i>${p.manager ? escapeHtml(p.manager) : 'Chưa đặt người quản lý'}</p><p style="margin:5px 0 0; font-size:12px; font-weight:760; color:${c.accent};"><i class="ti ti-${group.icon}" style="vertical-align:-2px;"></i> ${escapeHtml(group.label)}</p><p style="margin:5px 0 0; font-size:12px; font-weight:760; color:${accessColor};"><i class="ti ti-${accessIcon}" style="vertical-align:-2px;"></i> ${accessText} · ${escapeHtml(p.owner_email || 'không rõ email')}</p></div><span style="font-size:13px; font-weight:850; color:${c.accent}; background:${theme==='dark'?'rgba(10,22,38,0.58)':'rgba(255,255,255,0.72)'}; border:1px solid ${c.border}; border-radius:980px; padding:5px 8px; line-height:1;">${s.percent}%</span></div>
     <div style="height:6px; background:${c.border}; border-radius:4px; margin:12px 0 8px; overflow:hidden;"><div style="height:100%; width:${s.percent}%; background:${c.accent}; border-radius:4px;"></div></div>
     <p style="margin:0; font-size:12px; font-weight:720; color:${c.sub}; display:flex; align-items:center; justify-content:space-between; gap:8px;"><span>${s.done}/${s.total} công việc hoàn thành</span>${alerts ? `<span title="Có ${alerts} cảnh báo deadline/kế hoạch" style="color:${c.red}; font-weight:850; display:flex; align-items:center; gap:4px;"><i class="ti ti-bell-ringing"></i>${alerts}</span>` : ''}</p>
   </div>`;
@@ -2249,6 +2276,11 @@ function renderProjectList(list, c){
 
 function renderProjectDetail(project, c){
   const owner = isOwner(project);
+  const adminOther = isAdminUser() && !owner;
+  const canDelete = canDeleteProject(project);
+  const permissionIcon = owner ? 'lock-open' : (adminOther ? 'shield-check' : 'lock');
+  const permissionColor = owner ? c.green : (adminOther ? c.accent : c.amber);
+  const permissionText = owner ? 'Bạn là chủ dự án, được quyền sửa.' : (adminOther ? 'Bạn là admin, được quyền xóa dự án này. Các nội dung khác vẫn chỉ chủ dự án được sửa.' : 'Bạn chỉ được xem/copy, không được sửa dự án này.');
   const projectGroup = getProjectGroupOption(project);
   const tasks = project.tasks || [];
   const filteredTasks = tasks.filter(t => taskMatchesProjectFilter(t, projectTaskFilter));
@@ -2309,7 +2341,7 @@ function renderProjectDetail(project, c){
 
   return `<div style="background:${theme==='dark'?'rgba(9,18,32,0.70)':'rgba(248,252,255,0.76)'};border:1px solid ${c.border};border-radius:16px;padding:14px 16px 16px;margin-bottom:24px;${cardEffect()}">
     <button data-action="home" style="border:none; background:${theme==='dark'?'rgba(255,255,255,0.08)':'rgba(255,255,255,0.30)'}; color:${c.accent}; font-size:14px; font-weight:650; cursor:pointer; padding:7px 10px; margin-bottom:12px; border-radius:10px; display:flex; align-items:center; gap:4px;"><i class="ti ti-arrow-left" style="font-size:15px;"></i>Danh mục dự án</button>
-    <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap;"><div><h2 style="margin:0; font-size:26px; font-weight:650; letter-spacing:0;">${escapeHtml(project.name)}</h2><p style="margin:6px 0 0; font-size:14px; color:${c.sub};"><i class="ti ti-user-circle" style="font-size:15px; vertical-align:-2px; margin-right:5px;"></i>Người quản lý: ${project.manager ? escapeHtml(project.manager) : 'Chưa đặt'} · Chủ dự án: ${escapeHtml(project.owner_email || 'không rõ')}</p><p style="margin:6px 0 0; font-size:13px; color:${c.accent}; display:flex; align-items:center; gap:6px; flex-wrap:wrap;"><i class="ti ti-${projectGroup.icon}" style="vertical-align:-2px;"></i><span>Nhóm dự án:</span>${owner ? `<select data-action="project_group" data-id="${project.id}" style="font-size:13px;padding:5px 8px;border:1px solid ${c.border};border-radius:8px;background:${c.inputBg};color:${c.text};">${PROJECT_GROUP_OPTIONS.map(g=>`<option value="${g.key}" ${g.key===projectGroup.key?'selected':''}>${escapeHtml(g.label)}</option>`).join('')}</select>` : `<strong>${escapeHtml(projectGroup.label)}</strong>`}</p><p style="margin:6px 0 0; font-size:13px; color:${owner?c.green:c.amber};"><i class="ti ti-${owner?'lock-open':'lock'}" style="vertical-align:-2px;"></i> ${owner?'Bạn là chủ dự án, được quyền sửa.':'Bạn chỉ được xem/copy, không được sửa dự án này.'}</p></div><div style="display:flex; gap:8px; flex-wrap:wrap;"><button data-action="copyproject" data-id="${project.id}" style="border:1px solid ${c.border}; background:${theme==='dark'?'rgba(255,255,255,0.10)':'rgba(255,255,255,0.34)'}; color:${c.text}; font-size:13px; padding:8px 14px; border-radius:980px; cursor:pointer;"><i class="ti ti-copy" style="vertical-align:-2px;"></i> Copy về tài khoản tôi</button><button data-action="delproject" data-id="${project.id}" ${owner?'':'disabled'} style="border:1px solid ${c.border}; background:${theme==='dark'?'rgba(120,30,38,0.18)':'rgba(255,238,238,0.34)'}; color:${owner?c.red:c.border}; font-size:13px; padding:8px 14px; border-radius:980px; cursor:${owner?'pointer':'not-allowed'};"><i class="ti ti-trash" style="vertical-align:-2px;"></i> Xóa dự án</button></div></div>
+    <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap;"><div><h2 style="margin:0; font-size:26px; font-weight:650; letter-spacing:0;">${escapeHtml(project.name)}</h2><p style="margin:6px 0 0; font-size:14px; color:${c.sub};"><i class="ti ti-user-circle" style="font-size:15px; vertical-align:-2px; margin-right:5px;"></i>Người quản lý: ${project.manager ? escapeHtml(project.manager) : 'Chưa đặt'} · Chủ dự án: ${escapeHtml(project.owner_email || 'không rõ')}</p><p style="margin:6px 0 0; font-size:13px; color:${c.accent}; display:flex; align-items:center; gap:6px; flex-wrap:wrap;"><i class="ti ti-${projectGroup.icon}" style="vertical-align:-2px;"></i><span>Nhóm dự án:</span>${owner ? `<select data-action="project_group" data-id="${project.id}" style="font-size:13px;padding:5px 8px;border:1px solid ${c.border};border-radius:8px;background:${c.inputBg};color:${c.text};">${PROJECT_GROUP_OPTIONS.map(g=>`<option value="${g.key}" ${g.key===projectGroup.key?'selected':''}>${escapeHtml(g.label)}</option>`).join('')}</select>` : `<strong>${escapeHtml(projectGroup.label)}</strong>`}</p><p style="margin:6px 0 0; font-size:13px; color:${permissionColor};"><i class="ti ti-${permissionIcon}" style="vertical-align:-2px;"></i> ${permissionText}</p></div><div style="display:flex; gap:8px; flex-wrap:wrap;"><button data-action="copyproject" data-id="${project.id}" style="border:1px solid ${c.border}; background:${theme==='dark'?'rgba(255,255,255,0.10)':'rgba(255,255,255,0.34)'}; color:${c.text}; font-size:13px; padding:8px 14px; border-radius:980px; cursor:pointer;"><i class="ti ti-copy" style="vertical-align:-2px;"></i> Copy về tài khoản tôi</button><button data-action="delproject" data-id="${project.id}" ${canDelete?'':'disabled'} style="border:1px solid ${c.border}; background:${theme==='dark'?'rgba(120,30,38,0.18)':'rgba(255,238,238,0.34)'}; color:${canDelete?c.red:c.border}; font-size:13px; padding:8px 14px; border-radius:980px; cursor:${canDelete?'pointer':'not-allowed'};"><i class="ti ti-trash" style="vertical-align:-2px;"></i> Xóa dự án</button></div></div>
   </div>
 
     <div class="project-detail-shell">

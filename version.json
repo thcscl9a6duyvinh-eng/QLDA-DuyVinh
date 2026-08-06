@@ -1,4 +1,4 @@
 {
-  "version": "1.0.0",
-  "notes": "Phiên bản khởi tạo hệ thống cập nhật."
+  "version": "1.0.1",
+  "notes": "Bổ sung phân quyền admin để xóa dự án của tài khoản khác."
 }
