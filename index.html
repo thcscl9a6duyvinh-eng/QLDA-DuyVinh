@@ -289,19 +289,8 @@
       0 0 8px rgba(255,227,163,0.18);
   }
   .brand-signature::after {
-    content: "design by Duy Vĩnh";
-    display: block;
-    width: auto;
-    height: auto;
-    margin: 0;
-    border-radius: 0;
-    background: none;
-    animation: none;
-    font-size: 9.5px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-    color: var(--project-readable-muted, #26384d);
-    text-transform: none;
+    content: none;
+    display: none;
   }
   .dashboard-sidebar .brand-signature::before {
     text-shadow:
@@ -310,14 +299,13 @@
       0 0 8px rgba(255,227,163,0.22);
   }
   .dashboard-sidebar .brand-signature::after {
-    color: rgba(255,235,178,0.92);
-    text-shadow: 0 1px 2px rgba(0,0,0,0.34);
+    display: none;
   }
   [data-theme="dark"] .brand-signature::before {
     color: #ffe3a3;
   }
   [data-theme="dark"] .brand-signature::after {
-    color: rgba(239,247,255,0.88);
+    display: none;
   }
   @keyframes brandLogoGlow {
     0%, 100% {
@@ -393,6 +381,8 @@
     height: 100vh;
     overflow: auto;
     overscroll-behavior: contain;
+    display: flex;
+    flex-direction: column;
   }
   .dashboard-brand {
     min-height: 128px;
@@ -414,6 +404,33 @@
     position: sticky;
     top: 108px;
     z-index: 3;
+    flex: 0 0 auto;
+  }
+  .dashboard-sidebar-footer {
+    margin-top: auto;
+    padding: 16px 4px 4px;
+    border-top: 1px solid rgba(255,255,255,0.18);
+    text-align: center;
+    font-family: 'Be Vietnam Pro', 'Segoe UI', sans-serif;
+    position: relative;
+    z-index: 1;
+  }
+  .dashboard-sidebar-credit {
+    font-size: 11.5px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    line-height: 1.35;
+    color: rgba(255,235,178,0.96);
+    text-shadow: 0 1px 2px rgba(0,0,0,0.38);
+  }
+  .dashboard-sidebar-version {
+    margin-top: 4px;
+    font-size: 10px;
+    font-weight: 650;
+    letter-spacing: 0.02em;
+    line-height: 1.35;
+    color: rgba(239,247,255,0.82);
+    text-shadow: 0 1px 2px rgba(0,0,0,0.30);
   }
   .dashboard-nav-item {
     width: 100%;
@@ -785,6 +802,12 @@
       overflow-x: auto;
       padding-bottom: 2px;
       position: static;
+    }
+    .dashboard-sidebar-footer {
+      grid-column: 1 / -1;
+      margin-top: 0;
+      padding-top: 10px;
+      padding-bottom: 0;
     }
     .dashboard-main {
       grid-column: auto;
@@ -1997,6 +2020,10 @@ function render(){
         <button data-action="home" class="dashboard-nav-item ${!showGanttView && currentProjectId?'active':''}" type="button"><i class="ti ti-folders"></i><span>Dự án</span></button>
         <button data-action="show-gantt" class="dashboard-nav-item ${showGanttView?'active':''}" type="button"><i class="ti ti-chart-gantt"></i><span>Gantt tiến độ</span></button>
       </nav>
+      <div class="dashboard-sidebar-footer">
+        <div class="dashboard-sidebar-credit">design by Duy Vĩnh</div>
+        <div class="dashboard-sidebar-version">Phiên bản 1.0.0</div>
+      </div>
     </aside>
     <main class="dashboard-main">
       <header class="dashboard-topbar">
