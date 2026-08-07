@@ -960,7 +960,7 @@ const PROJECT_GROUP_OPTIONS = [
   { key:'qlda_xa', label:'QLDA các xã', icon:'building-community' },
   { key:'qlda_ban', label:'QLDA của Ban', icon:'building-bank' }
 ];
-const APP_VERSION = '1.0.1';
+const APP_VERSION = '1.0.2';
 const VERSION_MANIFEST_URL = 'version.json';
 const VERSION_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 const ADMIN_EMAILS = [
@@ -987,6 +987,7 @@ let legacyData = null;
 let projectSaveTimers = {};
 let projectSaveBuffers = {};
 let showGanttView = false; // toggle giữa project tracker và gantt
+let ganttViewMode = 'progress'; // 'progress' | 'construction'
 let onlineChannel = null;
 let onlineUsers = [];
 let showOnlinePanel = false;
@@ -1164,6 +1165,30 @@ function renderSaveText(){ const el=document.getElementById('saveText'); if(el) 
 function isUserEditing(){
   const el = document.activeElement;
   return !!el && ['INPUT','TEXTAREA','SELECT'].includes(el.tagName);
+}
+function normalizeGanttViewMode(mode){
+  return mode === 'construction' ? 'construction' : 'progress';
+}
+function isConstructionGanttMode(){
+  return normalizeGanttViewMode(ganttViewMode) === 'construction';
+}
+function ganttViewLabel(){
+  return isConstructionGanttMode() ? 'Gantt thi công' : 'Gantt tiến độ';
+}
+function openGanttView(mode){
+  const nextMode = normalizeGanttViewMode(mode);
+  const isSameOpen = showGanttView && ganttViewMode === nextMode;
+  const modeChanged = ganttViewMode !== nextMode;
+  ganttViewMode = nextMode;
+  ganttEditId = null;
+  if(modeChanged) ganttActiveTab = 'list';
+  if(isSameOpen){
+    showGanttView = false;
+  }else{
+    showGanttView = true;
+    if(window._syncGanttFromProject && nextMode === 'progress') window._syncGanttFromProject();
+  }
+  render();
 }
 function touchLocalTask(taskId, changes){
   for(const p of projects){
@@ -1502,6 +1527,27 @@ function preserveGanttProjectSyncInText(userText, oldFullText){
   return oldPayload ? setGanttProjectSyncInText(userText, oldPayload) : String(userText || '');
 }
 
+const CONSTRUCTION_GANTT_SYNC_PREFIX = '[[__CONSTRUCTION_GANTT_SYNC__:';
+const CONSTRUCTION_GANTT_SYNC_SUFFIX = ':__CONSTRUCTION_GANTT_SYNC__]]';
+const CONSTRUCTION_GANTT_SYNC_REGEX = /(?:\n?\n?)\[\[__CONSTRUCTION_GANTT_SYNC__:[A-Za-z0-9+/=]+:__CONSTRUCTION_GANTT_SYNC__\]\]/g;
+function stripConstructionGanttSyncFromText(text){
+  return String(text || '').replace(CONSTRUCTION_GANTT_SYNC_REGEX, '').trimEnd();
+}
+function readConstructionGanttSyncFromText(text){
+  const m = String(text || '').match(/\[\[__CONSTRUCTION_GANTT_SYNC__:([A-Za-z0-9+/=]+):__CONSTRUCTION_GANTT_SYNC__\]\]/);
+  return m ? decodeGanttPayload(m[1]) : null;
+}
+function setConstructionGanttSyncInText(userText, payload){
+  const clean = stripConstructionGanttSyncFromText(userText || '');
+  const encoded = encodeGanttPayload(payload || {});
+  if(!encoded) return clean;
+  return clean + '\n\n' + CONSTRUCTION_GANTT_SYNC_PREFIX + encoded + CONSTRUCTION_GANTT_SYNC_SUFFIX;
+}
+function preserveConstructionGanttSyncInText(userText, oldFullText){
+  const oldPayload = readConstructionGanttSyncFromText(oldFullText || '');
+  return oldPayload ? setConstructionGanttSyncInText(userText, oldPayload) : String(userText || '');
+}
+
 const PROJECT_META_PREFIX = '[[__PROJECT_META_SYNC__:';
 const PROJECT_META_SUFFIX = ':__PROJECT_META_SYNC__]]';
 const PROJECT_META_REGEX = /(?:\n?\n?)\[\[__PROJECT_META_SYNC__:[A-Za-z0-9+/=]+:__PROJECT_META_SYNC__\]\]/g;
@@ -1522,7 +1568,7 @@ function setProjectMetaInText(userText, payload){
   return clean + '\n\n' + PROJECT_META_PREFIX + encoded + PROJECT_META_SUFFIX;
 }
 function stripInternalProjectText(text){
-  return stripProjectMetaFromText(stripGanttProjectSyncFromText(text || '')).trimEnd();
+  return stripProjectMetaFromText(stripConstructionGanttSyncFromText(stripGanttProjectSyncFromText(text || ''))).trimEnd();
 }
 function mergeProjectInternalInText(userText, oldFullText){
   let next = String(userText || '');
@@ -1530,6 +1576,8 @@ function mergeProjectInternalInText(userText, oldFullText){
   if(meta && Object.keys(meta).length) next = setProjectMetaInText(next, meta);
   const ganttPayload = readGanttProjectSyncFromText(oldFullText || '');
   if(ganttPayload) next = setGanttProjectSyncInText(next, ganttPayload);
+  const constructionPayload = readConstructionGanttSyncFromText(oldFullText || '');
+  if(constructionPayload) next = setConstructionGanttSyncInText(next, constructionPayload);
   return next;
 }
 function normalizeProjectGroupKey(value){
@@ -1550,6 +1598,8 @@ function setProjectGroupInText(oldFullText, groupKey){
   let next = setProjectMetaInText(userText, meta);
   const ganttPayload = readGanttProjectSyncFromText(oldFullText || '');
   if(ganttPayload) next = setGanttProjectSyncInText(next, ganttPayload);
+  const constructionPayload = readConstructionGanttSyncFromText(oldFullText || '');
+  if(constructionPayload) next = setConstructionGanttSyncInText(next, constructionPayload);
   return next;
 }
 function parseMoney(value){
@@ -2180,7 +2230,8 @@ function render(){
       <nav class="dashboard-nav" aria-label="Điều hướng chính">
         <button data-action="home" class="dashboard-nav-item ${!showGanttView && !currentProjectId?'active':''}" type="button"><i class="ti ti-home"></i><span>Tổng quan</span></button>
         <button data-action="home" class="dashboard-nav-item ${!showGanttView && currentProjectId?'active':''}" type="button"><i class="ti ti-folders"></i><span>Dự án</span></button>
-        <button data-action="show-gantt" class="dashboard-nav-item ${showGanttView?'active':''}" type="button"><i class="ti ti-chart-gantt"></i><span>Gantt tiến độ</span></button>
+        <button data-action="show-gantt" class="dashboard-nav-item ${showGanttView&&!isConstructionGanttMode()?'active':''}" type="button"><i class="ti ti-chart-gantt"></i><span>Gantt tiến độ</span></button>
+        <button data-action="show-construction-gantt" class="dashboard-nav-item ${showGanttView&&isConstructionGanttMode()?'active':''}" type="button"><i class="ti ti-building-bridge"></i><span>Gantt thi công</span></button>
       </nav>
       <div class="dashboard-sidebar-footer">
         <div class="dashboard-sidebar-credit">design by Duy Vĩnh</div>
@@ -2192,10 +2243,11 @@ function render(){
       <header class="dashboard-topbar">
         <div class="dashboard-topbar-left">
           <button data-action="home" class="dashboard-icon-btn" type="button" aria-label="Về tổng quan"><i class="ti ti-home" style="font-size:18px;"></i></button>
-          <div class="dashboard-kicker">${showGanttView?'Gantt tiến độ':(project?'Chi tiết dự án':'Tổng quan dự án')}</div>
+          <div class="dashboard-kicker">${showGanttView?ganttViewLabel():(project?'Chi tiết dự án':'Tổng quan dự án')}</div>
         </div>
         <div class="dashboard-topbar-right">
-          <button data-action="toggle-gantt" class="dashboard-pill-btn" type="button"><i class="ti ti-chart-gantt" style="font-size:17px;"></i>${showGanttView?'Quay lại dự án':'Sơ đồ Gantt'}</button>
+          <button data-action="toggle-gantt" class="dashboard-pill-btn" type="button"><i class="ti ti-chart-gantt" style="font-size:17px;"></i>${showGanttView&&!isConstructionGanttMode()?'Quay lại dự án':'Sơ đồ Gantt'}</button>
+          <button data-action="toggle-construction-gantt" class="dashboard-pill-btn" type="button"><i class="ti ti-building-bridge" style="font-size:17px;"></i>${showGanttView&&isConstructionGanttMode()?'Quay lại dự án':'Gantt thi công'}</button>
           <button data-action="theme" class="dashboard-icon-btn" type="button" aria-label="Chuyển chế độ sáng/tối"><i class="ti ti-${theme==='light'?'moon':'sun'}" style="font-size:18px;" aria-hidden="true"></i></button>
           <div id="onlineUsersWidget">${renderOnlineUsersWidgetContent()}</div>
           <div class="dashboard-user-chip" title="${escapeHtml(displayUserName())}"><span class="dashboard-avatar">${escapeHtml(userInitial())}</span><strong>${escapeHtml(displayUserName())}</strong>${isAdminUser()?`<span style="font-size:10px;font-weight:850;text-transform:uppercase;letter-spacing:0;border:1px solid ${c.border};border-radius:980px;padding:3px 6px;color:${c.accent};background:${c.info};"><i class="ti ti-shield-check" style="font-size:12px;vertical-align:-2px;"></i> Admin</span>`:''}</div>
@@ -2462,8 +2514,10 @@ function attachEvents(project){
   const reload=root.querySelector('[data-action="reload"]'); if(reload) reload.onclick=()=>loadAll({showLoading:true});
   attachVersionUpdateButton();
   const importBtn=root.querySelector('[data-action="importlegacy"]'); if(importBtn) importBtn.onclick=importLegacyToMyAccount;
-  root.querySelectorAll('[data-action="toggle-gantt"]').forEach(b=> b.onclick=()=>{ showGanttView=!showGanttView; render(); });
-  root.querySelectorAll('[data-action="show-gantt"]').forEach(b=> b.onclick=()=>{ showGanttView=true; render(); });
+  root.querySelectorAll('[data-action="toggle-gantt"]').forEach(b=> b.onclick=()=> openGanttView('progress'));
+  root.querySelectorAll('[data-action="toggle-construction-gantt"]').forEach(b=> b.onclick=()=> openGanttView('construction'));
+  root.querySelectorAll('[data-action="show-gantt"]').forEach(b=> b.onclick=()=> openGanttView('progress'));
+  root.querySelectorAll('[data-action="show-construction-gantt"]').forEach(b=> b.onclick=()=> openGanttView('construction'));
   root.querySelectorAll('[data-action="filter"]').forEach(b=> b.onclick=()=>{ filterMode=b.dataset.filter; currentProjectId=null; render(); });
   root.querySelectorAll('[data-action="open"]').forEach(b=> b.onclick=()=>{
     currentProjectId=b.dataset.id; expandedTaskId=null; projectTaskFilter='all';
@@ -2555,14 +2609,19 @@ function drawCharts(project, c){
 // Dữ liệu Gantt được lưu theo từng dự án. localStorage chỉ là bộ đệm nhanh;
 // bản chính của các công việc liên kết sẽ được ghi ẩn vào Supabase qua cột notes.
 let ganttSupabaseSaveTimer = null;
-function ganttStorageKey(){
+function activeGanttMode(){
+  return normalizeGanttViewMode(ganttViewMode);
+}
+function ganttStorageKey(mode=activeGanttMode()){
   const uid = currentUser && currentUser.id ? currentUser.id : 'guest';
   const pid = currentProjectId || 'no_project';
+  if(mode === 'construction') return `construction_gantt_tasks_v1_${uid}_${pid}`;
   return `gantt_tasks_v3_${uid}_${pid}`;
 }
-function ganttMetaKey(){
+function ganttMetaKey(mode=activeGanttMode()){
   const uid = currentUser && currentUser.id ? currentUser.id : 'guest';
   const pid = currentProjectId || 'no_project';
+  if(mode === 'construction') return `construction_gantt_meta_v1_${uid}_${pid}`;
   return `gantt_meta_v3_${uid}_${pid}`;
 }
 function ganttSave(){
@@ -2584,12 +2643,47 @@ function ganttLoad(){
 }
 function clearGanttProgressOverride(taskId, nextDone){
   if(!taskId || !currentProjectId) return;
-  ganttLoad();
-  const gt = ganttTasks.find(t => t.projectTaskId === taskId);
+  let progressTasks = [];
+  try{ const t = localStorage.getItem(ganttStorageKey('progress')); progressTasks = t ? JSON.parse(t) : []; }catch(e){ progressTasks=[]; }
+  if(!isConstructionGanttMode()){
+    ganttLoad();
+    progressTasks = ganttTasks;
+  }
+  const gt = progressTasks.find(t => t.projectTaskId === taskId);
   if(!gt) return;
   gt.progressManual = false;
   gt.progress = defaultLinkedGanttProgress({ done: !!nextDone });
-  try{ localStorage.setItem(ganttStorageKey(), JSON.stringify(ganttTasks)); }catch(e){}
+  try{ localStorage.setItem(ganttStorageKey('progress'), JSON.stringify(progressTasks)); }catch(e){}
+  if(!isConstructionGanttMode()) ganttTasks = progressTasks;
+}
+function normalizeStandaloneGanttTask(t){
+  return {
+    id: (t && t.id) || uid(),
+    wbs: (t && t.wbs) || '',
+    name: (t && t.name) || '',
+    start: (t && t.start) || '',
+    end: (t && t.end) || '',
+    progress: Math.min(100, Math.max(0, Number(t && t.progress) || 0)),
+    unit: (t && t.unit) || '',
+    notes: (t && t.notes) || ''
+  };
+}
+function loadConstructionGanttFromProject(){
+  const project = projects.find(p => p.id === currentProjectId);
+  if(!project){ ganttTasks=[]; ganttProjectName=''; ganttReportDate=''; return; }
+  ganttLoad();
+  const projectSaved = readConstructionGanttSyncFromText(project.funding_source || '') || {};
+  if(projectSaved.name !== undefined) ganttProjectName = projectSaved.name || ganttProjectName || project.name || '';
+  if(projectSaved.date !== undefined) ganttReportDate = projectSaved.date || ganttReportDate || '';
+  if(Array.isArray(projectSaved.unlinked)){
+    ganttTasks = projectSaved.unlinked.map(normalizeStandaloneGanttTask);
+    applySavedGanttOrder(projectSaved.order, []);
+  }
+  if(!ganttProjectName && project.name) ganttProjectName = project.name;
+  try{
+    localStorage.setItem(ganttStorageKey('construction'), JSON.stringify(ganttTasks));
+    localStorage.setItem(ganttMetaKey('construction'), JSON.stringify({ name: ganttProjectName, date: ganttReportDate }));
+  }catch(e){}
 }
 function buildGanttProjectPayload(){
   return {
@@ -2612,7 +2706,9 @@ function buildGanttProjectPayload(){
 function updateLocalGanttProjectSnapshot(){
   const project = projects.find(p => p.id === currentProjectId);
   if(!project) return;
-  const nextFundingSource = setGanttProjectSyncInText(project.funding_source || '', buildGanttProjectPayload());
+  const nextFundingSource = isConstructionGanttMode()
+    ? setConstructionGanttSyncInText(project.funding_source || '', buildGanttProjectPayload())
+    : setGanttProjectSyncInText(project.funding_source || '', buildGanttProjectPayload());
   if(nextFundingSource !== (project.funding_source || '')){
     touchLocalProject(project.id, { funding_source: nextFundingSource });
   }
@@ -2624,13 +2720,30 @@ function scheduleGanttSupabaseSave(){
   clearTimeout(ganttSupabaseSaveTimer);
   saving = true;
   statusOk = true;
-  statusText = 'Đang tự động lưu Gantt...';
+  statusText = isConstructionGanttMode() ? 'Đang tự động lưu Gantt thi công...' : 'Đang tự động lưu Gantt...';
   renderSaveText();
   ganttSupabaseSaveTimer = setTimeout(saveGanttToSupabase, 700);
 }
 async function saveGanttToSupabase(){
   const project = projects.find(p => p.id === currentProjectId);
   if(!project || !isOwner(project) || !db){ saving=false; renderSaveText(); return; }
+  if(isConstructionGanttMode()){
+    const nextFundingSource = setConstructionGanttSyncInText(project.funding_source || '', buildGanttProjectPayload());
+    touchLocalProject(project.id, { funding_source: nextFundingSource });
+    try{
+      const { error } = await db.from('projects').update({ funding_source: nextFundingSource, updated_at: nowIso() }).eq('id', project.id);
+      if(error) throw error;
+      statusOk = true;
+      statusText = 'Đã tự động lưu Gantt thi công.';
+    }catch(e){
+      console.error(e);
+      statusOk = false;
+      statusText = 'Không lưu được Gantt thi công lên Supabase. Kiểm tra quyền sửa dự án hoặc kết nối mạng.';
+    }
+    saving = false;
+    renderSaveText();
+    return;
+  }
   const updates = [];
   const projectTasks = project.tasks || [];
   for(const gt of ganttTasks){
@@ -2722,10 +2835,11 @@ function ganttUnit(t){ return t && t.unit ? String(t.unit) : ''; }
 // --- Excel Export ---
 function exportGanttExcel(){
   if(!window.XLSX){ alert('Thư viện XLSX chưa tải xong, thử lại sau vài giây.'); return; }
+  const constructionMode = isConstructionGanttMode();
   const wb = XLSX.utils.book_new();
 
   // Sheet 1: Danh sách công việc
-  const listHeaders = ['WBS','Nội dung công việc','Đơn vị thực hiện','Bắt đầu','Kết thúc','Tiến độ (%)','Số ngày','Ghi chú'];
+  const listHeaders = ['WBS', constructionMode ? 'Nội dung đầu mục thi công' : 'Nội dung công việc','Đơn vị thực hiện','Bắt đầu','Kết thúc','Tiến độ (%)','Số ngày','Ghi chú'];
   const listRows = ganttTasks.map(t=>([
     t.wbs||'',
     t.name||'',
@@ -2745,7 +2859,7 @@ function exportGanttExcel(){
     const cellAddr = XLSX.utils.encode_cell({r:0,c:C});
     if(ws1[cellAddr]) ws1[cellAddr].s = { font:{bold:true}, fill:{fgColor:{rgb:'2f6b8a'}}, alignment:{horizontal:'center'} };
   }
-  XLSX.utils.book_append_sheet(wb, ws1, 'Danh sách công việc');
+  XLSX.utils.book_append_sheet(wb, ws1, constructionMode ? 'Đầu mục thi công' : 'Danh sách công việc');
 
   // Sheet 2: Gantt timeline (text-based calendar grid)
   if(ganttTasks.length>0 && ganttTasks.some(t=>t.start&&t.end)){
@@ -2804,12 +2918,12 @@ function exportGanttExcel(){
   // Sheet 3: Tổng hợp tiến độ
   const st = ganttStats();
   const summaryData = [
-    ['BÁO CÁO TIẾN ĐỘ DỰ ÁN'],
+    [constructionMode ? 'BÁO CÁO GANTT THI CÔNG' : 'BÁO CÁO TIẾN ĐỘ DỰ ÁN'],
     ['Tên dự án:', ganttProjectName],
     ['Ngày báo cáo:', ganttReportDate ? new Date(ganttReportDate).toLocaleDateString('vi-VN') : new Date().toLocaleDateString('vi-VN')],
     [],
     ['Chỉ tiêu','Giá trị'],
-    ['Tổng số công việc', st.total],
+    [constructionMode ? 'Tổng số đầu mục thi công' : 'Tổng số công việc', st.total],
     ['Hoàn thành (100%)', st.done],
     ['Đang tiến hành', st.ongoing],
     ['Trễ tiến độ', st.late],
@@ -2819,15 +2933,21 @@ function exportGanttExcel(){
   ws3['!cols']=[{wch:30},{wch:20}];
   XLSX.utils.book_append_sheet(wb, ws3, 'Tổng hợp');
 
-  const fn = (ganttProjectName||'SoDoGantt').replace(/[^a-zA-Z0-9\u00C0-\u024F\s]/g,'_') + '_' + todayStr() + '.xlsx';
+  const fnBase = ganttProjectName || (constructionMode ? 'SoDoGanttThiCong' : 'SoDoGantt');
+  const fn = fnBase.replace(/[^a-zA-Z0-9\u00C0-\u024F\s]/g,'_') + '_' + todayStr() + '.xlsx';
   XLSX.writeFile(wb, fn);
 }
 
 // --- RENDER GANTT TAB ---
 function renderGanttTab(){
+  if(isConstructionGanttMode()) loadConstructionGanttFromProject();
+  else syncGanttFromProject();
   const c = colors();
   const st = ganttStats();
   const isLight = theme==='light';
+  const constructionMode = isConstructionGanttMode();
+  const taskNoun = constructionMode ? 'đầu mục thi công' : 'công việc';
+  const taskNounTitle = constructionMode ? 'Đầu mục thi công' : 'Công việc';
 
   const cardStyle = `background:${c.card}; border:1px solid ${c.border}; border-radius:16px; padding:20px; margin-bottom:20px; ${cardEffect()}`;
   const controlGlass = theme==='dark' ? 'rgba(9,18,32,0.38)' : 'rgba(255,255,255,0.38)';
@@ -2839,7 +2959,7 @@ function renderGanttTab(){
   const statsHtml = `
   <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-bottom:20px;">
     ${[
-      ['Tổng công việc', st.total, c.accent],
+      [constructionMode ? 'Tổng đầu mục' : 'Tổng công việc', st.total, c.accent],
       ['Hoàn thành', st.done, c.green],
       ['Đang trễ hạn', st.late, c.red],
       ['Đang tiến hành', st.ongoing, c.amber],
@@ -2862,11 +2982,11 @@ function renderGanttTab(){
   if(ganttActiveTab === 'list'){
     // --- Form nhập liệu ---
     const formHtml = `<div style="${cardStyle}">
-      <h3 style="margin:0 0 14px; font-size:16px; font-weight:650;"><i class="ti ti-plus-circle" style="vertical-align:-2px; margin-right:6px; color:${c.accent};"></i>Thêm công việc</h3>
+      <h3 style="margin:0 0 14px; font-size:16px; font-weight:650;"><i class="ti ti-plus-circle" style="vertical-align:-2px; margin-right:6px; color:${c.accent};"></i>Thêm ${taskNoun}</h3>
       <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; align-items:end;">
         <div style="grid-column:1/-1 !important">
-          <label style="font-size:12px;color:${c.sub};display:block;margin-bottom:5px;">Nội dung công việc <span style="color:${c.red}">*</span></label>
-          <input id="gantt-new-name" type="text" placeholder="Tên công việc..." style="width:100%;box-sizing:border-box;font-size:14px;padding:10px 12px;border:1px solid ${c.border};border-radius:10px;background:${c.inputBg};color:${c.text};"/>
+          <label style="font-size:12px;color:${c.sub};display:block;margin-bottom:5px;">Nội dung ${taskNoun} <span style="color:${c.red}">*</span></label>
+          <input id="gantt-new-name" type="text" placeholder="${constructionMode?'Tên đầu mục thi công...':'Tên công việc...'}" style="width:100%;box-sizing:border-box;font-size:14px;padding:10px 12px;border:1px solid ${c.border};border-radius:10px;background:${c.inputBg};color:${c.text};"/>
         </div>
         <div>
           <label style="font-size:12px;color:${c.sub};display:block;margin-bottom:5px;">Mã WBS</label>
@@ -2908,19 +3028,29 @@ function renderGanttTab(){
     // Banner hướng dẫn đồng bộ
     const currentProj = projects.find(p => p.id === currentProjectId);
     const linkedCount = ganttTasks.filter(t => t.projectTaskId).length;
-    const syncBannerHtml = currentProjectId && currentProj
-      ? `<div style="background:${infoGlass};border:1px solid ${c.accent};border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:${c.accent};display:flex;align-items:center;gap:8px;flex-wrap:wrap;${cardEffect()}">
-          <i class="ti ti-link" style="font-size:16px;flex-shrink:0;"></i>
-          <span>Đang đồng bộ với dự án <b>${escapeHtml(currentProj.name)}</b> · <b>${linkedCount}</b> công việc được liên kết tự động.
-          Mỗi khi thêm/sửa/xóa công việc ở bảng theo dõi, Gantt sẽ cập nhật theo. Ngày Gantt lấy từ thời gian kế hoạch/thực tế trong danh sách công việc dự án; tại Gantt chỉ chỉnh WBS, đơn vị, tiến độ và ghi chú.</span>
-        </div>`
-      : `<div style="background:${warnGlass};border:1px solid ${c.red};border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:${c.red};display:flex;align-items:center;gap:8px;${cardEffect()}">
-          <i class="ti ti-info-circle" style="font-size:16px;flex-shrink:0;"></i>
-          <span>Chưa mở dự án nào. Hãy quay lại <b>Danh mục dự án</b>, mở một dự án để danh sách công việc tự đồng bộ vào Gantt.</span>
-        </div>`;
+    const syncBannerHtml = constructionMode
+      ? (currentProjectId && currentProj
+        ? `<div style="background:${infoGlass};border:1px solid ${c.accent};border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:${c.accent};display:flex;align-items:center;gap:8px;flex-wrap:wrap;${cardEffect()}">
+            <i class="ti ti-building-bridge" style="font-size:16px;flex-shrink:0;"></i>
+            <span>Gantt thi công của dự án <b>${escapeHtml(currentProj.name)}</b> là bảng độc lập. Dữ liệu ở đây do người dùng tự thêm, tự sửa và không liên kết với mục Danh sách công việc.</span>
+          </div>`
+        : `<div style="background:${warnGlass};border:1px solid ${c.red};border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:${c.red};display:flex;align-items:center;gap:8px;${cardEffect()}">
+            <i class="ti ti-info-circle" style="font-size:16px;flex-shrink:0;"></i>
+            <span>Chưa mở dự án nào. Hãy quay lại <b>Danh mục dự án</b>, mở một dự án để tạo Gantt thi công riêng.</span>
+          </div>`)
+      : (currentProjectId && currentProj
+        ? `<div style="background:${infoGlass};border:1px solid ${c.accent};border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:${c.accent};display:flex;align-items:center;gap:8px;flex-wrap:wrap;${cardEffect()}">
+            <i class="ti ti-link" style="font-size:16px;flex-shrink:0;"></i>
+            <span>Đang đồng bộ với dự án <b>${escapeHtml(currentProj.name)}</b> · <b>${linkedCount}</b> công việc được liên kết tự động.
+            Mỗi khi thêm/sửa/xóa công việc ở bảng theo dõi, Gantt sẽ cập nhật theo. Ngày Gantt lấy từ thời gian kế hoạch/thực tế trong danh sách công việc dự án; tại Gantt chỉ chỉnh WBS, đơn vị, tiến độ và ghi chú.</span>
+          </div>`
+        : `<div style="background:${warnGlass};border:1px solid ${c.red};border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:${c.red};display:flex;align-items:center;gap:8px;${cardEffect()}">
+            <i class="ti ti-info-circle" style="font-size:16px;flex-shrink:0;"></i>
+            <span>Chưa mở dự án nào. Hãy quay lại <b>Danh mục dự án</b>, mở một dự án để danh sách công việc tự đồng bộ vào Gantt.</span>
+          </div>`);
 
     const tableRows = ganttTasks.length === 0
-      ? `<tr><td colspan="9" style="${tdStyle}text-align:center;color:${c.sub};padding:24px;">${currentProjectId ? 'Dự án chưa có công việc nào. Thêm công việc ở bảng theo dõi hoặc dùng form bên dưới.' : 'Hãy mở một dự án để danh sách công việc tự đồng bộ vào đây.'}</td></tr>`
+      ? `<tr><td colspan="9" style="${tdStyle}text-align:center;color:${c.sub};padding:24px;">${constructionMode ? (currentProjectId ? 'Gantt thi công chưa có đầu mục nào. Dùng form bên trên để thêm đầu mục thi công.' : 'Hãy mở một dự án để tạo Gantt thi công riêng.') : (currentProjectId ? 'Dự án chưa có công việc nào. Thêm công việc ở bảng theo dõi hoặc dùng form bên dưới.' : 'Hãy mở một dự án để danh sách công việc tự đồng bộ vào đây.')}</td></tr>`
       : ganttTasks.map((t,idx)=>{
           const barColor = ganttBarColor(t);
           const days = (t.start&&t.end) ? daysBetween(t.start,t.end) : '-';
@@ -3008,7 +3138,7 @@ function renderGanttTab(){
 
     const tableHtml = syncBannerHtml + `<div style="${cardStyle}overflow:hidden;padding:0;">
       <div style="padding:16px 20px;border-bottom:1px solid ${c.border};display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
-        <h3 style="margin:0;font-size:16px;font-weight:650;"><i class="ti ti-list-details" style="vertical-align:-2px;margin-right:6px;color:${c.accent};"></i>Danh sách công việc (${ganttTasks.length})</h3><span style="font-size:12px;color:${c.sub};"><i class="ti ti-arrows-move" style="vertical-align:-2px;"></i> Kéo thả tại đây để sắp xếp; Biểu đồ Gantt sẽ lấy đúng thứ tự này</span>
+        <h3 style="margin:0;font-size:16px;font-weight:650;"><i class="ti ti-list-details" style="vertical-align:-2px;margin-right:6px;color:${c.accent};"></i>Danh sách ${taskNoun} (${ganttTasks.length})</h3><span style="font-size:12px;color:${c.sub};"><i class="ti ti-arrows-move" style="vertical-align:-2px;"></i> Kéo thả tại đây để sắp xếp; Biểu đồ Gantt sẽ lấy đúng thứ tự này</span>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
           <button id="gantt-clear-btn" style="border:1px solid ${c.border};background:${c.card};color:${c.red};font-size:13px;padding:7px 14px;border-radius:8px;cursor:pointer;">
             <i class="ti ti-trash" style="vertical-align:-2px;"></i> Xóa tất cả</button>
@@ -3021,7 +3151,7 @@ function renderGanttTab(){
           <thead>
             <tr>
               <th style="${thStyle}width:70px;">WBS</th>
-              <th style="${thStyle}min-width:200px;">Nội dung công việc</th>
+              <th style="${thStyle}min-width:200px;">Nội dung ${taskNoun}</th>
               <th style="${thStyle}min-width:150px;">Đơn vị thực hiện</th>
               <th style="${thStyle}width:110px;">Bắt đầu</th>
               <th style="${thStyle}width:110px;">Kết thúc</th>
@@ -3067,12 +3197,14 @@ function renderGanttTab(){
 }
 
 function renderGanttChart(c, cardStyle){
+  const constructionMode = isConstructionGanttMode();
+  const taskNoun = constructionMode ? 'đầu mục thi công' : 'công việc';
   const validTasks = ganttTasks.filter(t=>t.start&&t.end);
   if(validTasks.length === 0){
     return `<div style="${cardStyle}text-align:center;padding:48px;color:${c.sub};">
       <i class="ti ti-chart-gantt" style="font-size:48px;opacity:.3;display:block;margin-bottom:12px;"></i>
-      <p style="margin:0;font-size:15px;">Chưa có công việc có ngày bắt đầu/kết thúc để vẽ biểu đồ.</p>
-      <p style="margin:8px 0 0;font-size:13px;">Hãy sang tab <b>Danh sách & Nhập liệu</b> để thêm công việc.</p>
+      <p style="margin:0;font-size:15px;">Chưa có ${taskNoun} có ngày bắt đầu/kết thúc để vẽ biểu đồ.</p>
+      <p style="margin:8px 0 0;font-size:13px;">Hãy sang tab <b>Danh sách & Nhập liệu</b> để thêm ${taskNoun}.</p>
     </div>`;
   }
 
@@ -3127,7 +3259,7 @@ function renderGanttChart(c, cardStyle){
                box-shadow:2px 0 6px ${SHADOW_R}, 0 2px 6px ${SHADOW_B};">
       <div style="display:grid;grid-template-columns:${TASK_W}px ${UNIT_W}px;height:26px;
                   font-size:11px;font-weight:700;color:#fff;">
-        <span style="display:flex;align-items:center;justify-content:center;border-right:1px solid rgba(255,255,255,0.24);">Nội dung công việc</span>
+        <span style="display:flex;align-items:center;justify-content:center;border-right:1px solid rgba(255,255,255,0.24);">Nội dung ${taskNoun}</span>
         <span style="display:flex;align-items:center;justify-content:center;">Đơn vị thực hiện</span>
       </div>
     </th>`;
@@ -3292,11 +3424,11 @@ function renderGanttChart(c, cardStyle){
                 justify-content:space-between;flex-wrap:wrap;gap:10px;">
       <div>
         <h3 style="margin:0;font-size:16px;font-weight:650;">
-          <i class="ti ti-chart-gantt" style="vertical-align:-2px;margin-right:6px;color:${c.accent};"></i>Biểu đồ Gantt
+          <i class="ti ti-chart-gantt" style="vertical-align:-2px;margin-right:6px;color:${c.accent};"></i>${constructionMode ? 'Biểu đồ Gantt thi công' : 'Biểu đồ Gantt'}
         </h3>
         ${ganttProjectName ? `<p style="margin:4px 0 0;font-size:12px;color:${c.sub};">
-          Dự án: ${escapeHtml(ganttProjectName)} · Ngày BC: ${formatDateVN(ganttReportDate||todayStr())} · Thứ tự lấy từ tab Danh sách & Nhập liệu
-        </p>` : `<p style="margin:4px 0 0;font-size:12px;color:${c.sub};">Thứ tự hiển thị lấy từ tab Danh sách & Nhập liệu.</p>`}
+          Dự án: ${escapeHtml(ganttProjectName)} · Ngày BC: ${formatDateVN(ganttReportDate||todayStr())} · ${constructionMode ? 'Dữ liệu thi công nhập riêng' : 'Thứ tự lấy từ tab Danh sách & Nhập liệu'}
+        </p>` : `<p style="margin:4px 0 0;font-size:12px;color:${c.sub};">${constructionMode ? 'Dữ liệu thi công nhập riêng trong từng dự án.' : 'Thứ tự hiển thị lấy từ tab Danh sách & Nhập liệu.'}</p>`}
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <label title="Bật/tắt cột Đơn vị thực hiện trong bản in" style="border:1px solid ${c.border};background:${c.inputBg};color:${c.text};font-size:12px;font-weight:600;padding:8px 11px;border-radius:8px;display:flex;align-items:center;gap:7px;cursor:pointer;white-space:nowrap;">
@@ -3465,7 +3597,8 @@ function attachGanttEvents(){
     const notes= section.querySelector('#gantt-new-notes').value.trim();
     const errEl= section.querySelector('#gantt-form-err');
 
-    if(!name){ errEl.style.display='block'; errEl.textContent='⚠ Vui lòng nhập nội dung công việc.'; return; }
+    if(!currentProjectId){ errEl.style.display='block'; errEl.textContent='⚠ Vui lòng mở một dự án trước khi thêm dữ liệu Gantt.'; return; }
+    if(!name){ errEl.style.display='block'; errEl.textContent=`⚠ Vui lòng nhập nội dung ${isConstructionGanttMode() ? 'đầu mục thi công' : 'công việc'}.`; return; }
     if(start && end && new Date(end)<new Date(start)){ errEl.style.display='block'; errEl.textContent='⚠ Ngày kết thúc phải sau ngày bắt đầu.'; return; }
     errEl.style.display='none';
     ganttTasks.push({ id:uid(), wbs, name, unit, start, end, progress:Math.min(100,Math.max(0,prog)), notes });
@@ -3542,7 +3675,7 @@ function attachGanttEvents(){
         if(t) delete t.projectTaskId;
         ganttTasks = ganttTasks.filter(t=>t.id!==btn.dataset.ganttDel);
       } else {
-        if(!confirm('Xóa công việc này khỏi Gantt?')) return;
+        if(!confirm(`Xóa ${isConstructionGanttMode() ? 'đầu mục thi công này' : 'công việc này'} khỏi Gantt?`)) return;
         ganttTasks=ganttTasks.filter(t=>t.id!==btn.dataset.ganttDel);
       }
       ganttSave(); refreshGanttSection();
@@ -3566,6 +3699,13 @@ function attachGanttEvents(){
   // Clear all
   const clearBtn = section.querySelector('#gantt-clear-btn');
   if(clearBtn) clearBtn.onclick=()=>{
+    if(isConstructionGanttMode()){
+      if(!confirm('Xóa toàn bộ đầu mục trong Gantt thi công?')) return;
+      ganttTasks = [];
+      ganttSave();
+      refreshGanttSection();
+      return;
+    }
     if(!confirm('Xóa toàn bộ WBS, đơn vị thực hiện, tiến độ và ghi chú trong Gantt? Công việc liên kết từ dự án vẫn được giữ lại; ngày Gantt vẫn lấy từ kế hoạch/thực tế của danh sách công việc dự án.')) return;
     const project = projects.find(p => p.id === currentProjectId);
     const projectTaskById = new Map(((project && project.tasks) || []).map(pt => [pt.id, pt]));
@@ -3589,8 +3729,9 @@ function refreshGanttSection(){
 //   3. Công việc đã xóa khỏi project → xóa luôn khỏi ganttTasks
 //   4. Công việc tự thêm thẳng vào Gantt (không có projectTaskId) → giữ nguyên
 function syncGanttFromProject(){
+  if(isConstructionGanttMode()) return;
   const project = projects.find(p => p.id === currentProjectId);
-  if(!project) return; // không có project đang mở → không sync
+  if(!project){ ganttLoad(); return; } // không có project đang mở → reset về bảng trống
 
   // Đổi dự án/tài khoản thì nạp bộ đệm đúng dự án trước.
   ganttLoad();
@@ -3691,6 +3832,8 @@ function syncGanttFromProject(){
 // ─── In biểu đồ Gantt ───────────────────────────────────────────────────────
 function buildFullSVG(showUnit=true){
   // Xây SVG đơn khổ đầy đủ (dùng riêng cho in — luôn nền trắng)
+  const constructionMode = isConstructionGanttMode();
+  const taskNoun = constructionMode ? 'đầu mục thi công' : 'công việc';
   const validTasks = ganttTasks.filter(t=>t.start&&t.end);
   if(!validTasks.length) return null;
 
@@ -3728,7 +3871,7 @@ function buildFullSVG(showUnit=true){
   s+=`<rect width="${chartW}" height="${chartH}" fill="#fff"/>`;
   s+=`<rect x="0" y="0" width="${LABEL_W}" height="${chartH}" fill="#f2f6f9"/>`;
   s+=`<rect x="0" y="0" width="${LABEL_W}" height="26" fill="#1f4f67"/>`;
-  s+=`<text x="${showUnit ? TASK_LABEL_W/2 : LABEL_W/2}" y="17" text-anchor="middle" font-size="10" font-weight="bold" fill="#fff" ${FONT}>Nội dung công việc</text>`;
+  s+=`<text x="${showUnit ? TASK_LABEL_W/2 : LABEL_W/2}" y="17" text-anchor="middle" font-size="10" font-weight="bold" fill="#fff" ${FONT}>Nội dung ${taskNoun}</text>`;
   if(showUnit){
     s+=`<line x1="${TASK_LABEL_W}" y1="0" x2="${TASK_LABEL_W}" y2="${chartH}" stroke="rgba(0,0,0,0.14)" stroke-width="1"/>`;
     s+=`<text x="${TASK_LABEL_W+UNIT_LABEL_W/2}" y="17" text-anchor="middle" font-size="10" font-weight="bold" fill="#fff" ${FONT}>Đơn vị thực hiện</text>`;
@@ -3808,14 +3951,16 @@ function buildFullSVG(showUnit=true){
 }
 
 function printGanttChart(){
+  const constructionMode = isConstructionGanttMode();
+  const taskNoun = constructionMode ? 'đầu mục thi công' : 'công việc';
   const validTasks=ganttTasks.filter(t=>t.start&&t.end);
-  if(!validTasks.length){ alert('Chưa có công việc nào có ngày bắt đầu/kết thúc.\nHãy điền ngày cho các công việc rồi thử lại.'); return; }
+  if(!validTasks.length){ alert(`Chưa có ${taskNoun} nào có ngày bắt đầu/kết thúc.\nHãy điền ngày cho các ${taskNoun} rồi thử lại.`); return; }
 
   const unitToggle = document.getElementById('gantt-print-unit-toggle');
   const showUnit = !unitToggle || unitToggle.checked;
   const res=buildFullSVG(showUnit); if(!res) return;
   const {svgStr, chartW}=res;
-  const projName = ganttProjectName||'Biểu đồ Gantt';
+  const projName = ganttProjectName || (constructionMode ? 'Sơ đồ Gantt thi công' : 'Biểu đồ Gantt');
   const repDate  = ganttReportDate ? new Date(ganttReportDate).toLocaleDateString('vi-VN') : new Date().toLocaleDateString('vi-VN');
   const printedAt= new Date().toLocaleString('vi-VN');
   const st = ganttStats();
@@ -3858,11 +4003,11 @@ function printGanttChart(){
   <div class="gp">
     <div class="gp-hd">
       <div>
-        <p class="gp-title">📊 BÁO CÁO TIẾN ĐỘ DỰ ÁN — BIỂU ĐỒ GANTT</p>
+        <p class="gp-title">📊 ${constructionMode ? 'SƠ ĐỒ GANTT THI CÔNG' : 'BÁO CÁO TIẾN ĐỘ DỰ ÁN — BIỂU ĐỒ GANTT'}</p>
         <p class="gp-sub">Dự án / Công trình: <b>${escapeHtml(projName)}</b></p>
         <p class="gp-sub">Ngày báo cáo: <b>${repDate}</b></p>
       </div>
-      <div class="gp-right">In lúc: ${printedAt}<br/>Tổng số công việc: <b>${st.total}</b></div>
+      <div class="gp-right">In lúc: ${printedAt}<br/>${constructionMode ? 'Tổng số đầu mục thi công' : 'Tổng số công việc'}: <b>${st.total}</b></div>
     </div>
     <div class="gp-stats">
       <div class="gp-stat"><b style="color:#3d8b72">${st.done}</b>Hoàn thành</div>

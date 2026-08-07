@@ -1,4 +1,4 @@
 {
-  "version": "1.0.1",
-  "notes": "Bổ sung phân quyền admin để xóa dự án của tài khoản khác."
+  "version": "1.0.2",
+  "notes": "Bổ sung Sơ đồ Gantt thi công độc lập trong từng dự án."
 }
