@@ -1,4 +1,4 @@
 {
-  "version": "1.0.4",
-  "notes": "Bổ sung nút cập nhật phiên bản mới, popup thông báo bản mới và tiến trình cập nhật 0-100%."
+  "version": "1.0.5",
+  "notes": "Bổ sung Hạng mục trong Gantt thi công để gom nhiều đầu mục thi công theo từng nhóm."
 }

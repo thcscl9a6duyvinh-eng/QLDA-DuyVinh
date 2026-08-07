@@ -1073,7 +1073,7 @@ const PROJECT_GROUP_OPTIONS = [
   { key:'qlda_xa', label:'QLDA các xã', icon:'building-community' },
   { key:'qlda_ban', label:'QLDA của Ban', icon:'building-bank' }
 ];
-const APP_VERSION = '1.0.4';
+const APP_VERSION = '1.0.5';
 const VERSION_MANIFEST_URL = 'version.json';
 const VERSION_CHECK_INTERVAL_MS = 60 * 1000;
 const APP_UPDATE_DISMISSED_KEY = 'cpt-update-dismissed-version-v1';
@@ -1119,6 +1119,7 @@ let ganttReportDate = '';
 let ganttActiveTab = 'list';  // 'list' | 'chart'
 let ganttEditId = null;
 let ganttDragScrollX = 0;
+let constructionGanttGroups = [];
 
 function escapeHtml(s){ const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
 function versionParts(v){
@@ -2915,7 +2916,9 @@ function ganttMetaKey(mode=activeGanttMode()){
 function ganttSave(){
   try{
     localStorage.setItem(ganttStorageKey(), JSON.stringify(ganttTasks));
-    localStorage.setItem(ganttMetaKey(), JSON.stringify({ name: ganttProjectName, date: ganttReportDate }));
+    const meta = { name: ganttProjectName, date: ganttReportDate };
+    if(isConstructionGanttMode()) meta.groups = constructionGanttGroups;
+    localStorage.setItem(ganttMetaKey(), JSON.stringify(meta));
   }catch(e){}
 
   // Cực quan trọng: cập nhật ngay bản ghi cục bộ của dự án.
@@ -2926,9 +2929,9 @@ function ganttSave(){
   scheduleGanttSupabaseSave();
 }
 function ganttLoad(){
-  if(!currentProjectId){ ganttTasks=[]; ganttProjectName=''; ganttReportDate=''; return; }
+  if(!currentProjectId){ ganttTasks=[]; ganttProjectName=''; ganttReportDate=''; constructionGanttGroups=[]; return; }
   try{ const t = localStorage.getItem(ganttStorageKey()); ganttTasks = t ? JSON.parse(t) : []; } catch(e){ ganttTasks=[]; }
-  try{ const m = localStorage.getItem(ganttMetaKey()); if(m){ const o=JSON.parse(m); ganttProjectName=o.name||''; ganttReportDate=o.date||''; } }catch(e){}
+  try{ const m = localStorage.getItem(ganttMetaKey()); if(m){ const o=JSON.parse(m); ganttProjectName=o.name||''; ganttReportDate=o.date||''; if(isConstructionGanttMode() && Array.isArray(o.groups)) constructionGanttGroups = normalizeConstructionGanttGroups(o.groups); } }catch(e){}
 }
 function clearGanttProgressOverride(taskId, nextDone){
   if(!taskId || !currentProjectId) return;
@@ -2945,6 +2948,111 @@ function clearGanttProgressOverride(taskId, nextDone){
   try{ localStorage.setItem(ganttStorageKey('progress'), JSON.stringify(progressTasks)); }catch(e){}
   if(!isConstructionGanttMode()) ganttTasks = progressTasks;
 }
+function normalizeConstructionGanttGroup(g, idx=0){
+  return {
+    id: (g && g.id) || uid(),
+    name: String((g && g.name) || '').trim() || `Hạng mục ${idx + 1}`
+  };
+}
+function normalizeConstructionGanttGroups(groups){
+  const seen = new Set();
+  return (Array.isArray(groups) ? groups : []).map(normalizeConstructionGanttGroup).filter(g => {
+    if(!g.id || seen.has(g.id)) return false;
+    seen.add(g.id);
+    return true;
+  });
+}
+function constructionGroupById(groupId){
+  return constructionGanttGroups.find(g => g.id === groupId) || null;
+}
+function constructionTaskGroupId(t){
+  const groupId = String((t && t.groupId) || '').trim();
+  return constructionGroupById(groupId) ? groupId : '';
+}
+function constructionGroupName(groupId){
+  const group = constructionGroupById(groupId);
+  return group ? group.name : 'Chưa phân hạng mục';
+}
+function constructionGroupOptionsHtml(selectedId='', options={}){
+  const allowUngrouped = options.allowUngrouped !== false;
+  const placeholder = options.placeholder || 'Chọn hạng mục';
+  const selected = String(selectedId || '');
+  const rows = [];
+  if(allowUngrouped) rows.push(`<option value="" ${selected===''?'selected':''}>${escapeHtml(options.ungroupedLabel || 'Chưa phân hạng mục')}</option>`);
+  else rows.push(`<option value="" ${selected===''?'selected':''} disabled>${escapeHtml(placeholder)}</option>`);
+  constructionGanttGroups.forEach(g => rows.push(`<option value="${escapeHtml(g.id)}" ${selected===g.id?'selected':''}>${escapeHtml(g.name)}</option>`));
+  return rows.join('');
+}
+function orderedConstructionTasksForDisplay(){
+  const groupOrder = new Map(constructionGanttGroups.map((g,idx)=>[g.id,idx]));
+  const sourceIndex = new Map(ganttTasks.map((t,idx)=>[t.id,idx]));
+  return [...ganttTasks].sort((a,b)=>{
+    const ag = constructionTaskGroupId(a);
+    const bg = constructionTaskGroupId(b);
+    const ai = ag ? (groupOrder.get(ag) ?? 99998) : 99999;
+    const bi = bg ? (groupOrder.get(bg) ?? 99998) : 99999;
+    if(ai !== bi) return ai - bi;
+    return (sourceIndex.get(a.id) ?? 0) - (sourceIndex.get(b.id) ?? 0);
+  });
+}
+function constructionGroupTasks(groupId){
+  return ganttTasks.filter(t => constructionTaskGroupId(t) === groupId);
+}
+function constructionGroupSummary(groupId){
+  const tasks = constructionGroupTasks(groupId);
+  const valid = tasks.filter(t => t.start && t.end);
+  const start = valid.length ? new Date(Math.min(...valid.map(t=>new Date(t.start)))).toISOString().slice(0,10) : '';
+  const end = valid.length ? new Date(Math.max(...valid.map(t=>new Date(t.end)))).toISOString().slice(0,10) : '';
+  const progress = tasks.length ? Math.round(tasks.reduce((sum,t)=>sum + clampGanttProgress(t.progress), 0) / tasks.length) : 0;
+  return {
+    id: `group:${groupId || 'ungrouped'}`,
+    isConstructionGroup: true,
+    groupId,
+    wbs: '',
+    name: constructionGroupName(groupId),
+    start,
+    end,
+    progress,
+    unit: `${tasks.length} đầu mục`,
+    notes: ''
+  };
+}
+function constructionRowsWithGroups(includeEmptyGroups=false){
+  const rows = [];
+  constructionGanttGroups.forEach(group => {
+    const tasks = constructionGroupTasks(group.id);
+    if(includeEmptyGroups || tasks.length){
+      rows.push(constructionGroupSummary(group.id));
+      rows.push(...orderedConstructionTasksForDisplay().filter(t => constructionTaskGroupId(t) === group.id));
+    }
+  });
+  const ungrouped = orderedConstructionTasksForDisplay().filter(t => !constructionTaskGroupId(t));
+  if(ungrouped.length){
+    rows.push(constructionGroupSummary(''));
+    rows.push(...ungrouped);
+  }
+  return rows;
+}
+function constructionGroupHeaderHtml(groupId, colSpan, c){
+  const group = constructionGroupById(groupId);
+  const tasks = constructionGroupTasks(groupId);
+  const canEditGroup = !!group;
+  return `<tr data-gantt-group-row="${escapeHtml(groupId || 'ungrouped')}">
+    <td colspan="${colSpan}" style="padding:10px 12px;border-bottom:1px solid ${c.border};background:${theme==='dark'?'rgba(255,235,178,0.10)':'rgba(255,235,178,0.42)'};color:${c.text};">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+        <div style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:850;">
+          <i class="ti ti-folder" style="color:${c.accent};font-size:16px;"></i>
+          <span>Hạng mục: ${escapeHtml(constructionGroupName(groupId))}</span>
+          <span style="font-size:11px;font-weight:750;color:${c.sub};">(${tasks.length} đầu mục)</span>
+        </div>
+        ${canEditGroup ? `<div style="display:flex;gap:6px;">
+          <button data-gantt-edit-group="${escapeHtml(groupId)}" type="button" style="border:1px solid ${c.border};background:${c.card};color:${c.accent};border-radius:8px;padding:5px 9px;cursor:pointer;font-size:12px;font-weight:750;"><i class="ti ti-edit" style="vertical-align:-2px;"></i> Sửa</button>
+          <button data-gantt-del-group="${escapeHtml(groupId)}" type="button" style="border:1px solid ${c.border};background:${c.card};color:${c.red};border-radius:8px;padding:5px 9px;cursor:pointer;font-size:12px;font-weight:750;"><i class="ti ti-trash" style="vertical-align:-2px;"></i> Xóa</button>
+        </div>` : ''}
+      </div>
+    </td>
+  </tr>`;
+}
 function normalizeStandaloneGanttTask(t){
   return {
     id: (t && t.id) || uid(),
@@ -2954,16 +3062,18 @@ function normalizeStandaloneGanttTask(t){
     end: (t && t.end) || '',
     progress: Math.min(100, Math.max(0, Number(t && t.progress) || 0)),
     unit: (t && t.unit) || '',
-    notes: (t && t.notes) || ''
+    notes: (t && t.notes) || '',
+    groupId: (t && t.groupId) || ''
   };
 }
 function loadConstructionGanttFromProject(){
   const project = projects.find(p => p.id === currentProjectId);
-  if(!project){ ganttTasks=[]; ganttProjectName=''; ganttReportDate=''; return; }
+  if(!project){ ganttTasks=[]; ganttProjectName=''; ganttReportDate=''; constructionGanttGroups=[]; return; }
   ganttLoad();
   const projectSaved = readConstructionGanttSyncFromText(project.funding_source || '') || {};
   if(projectSaved.name !== undefined) ganttProjectName = projectSaved.name || ganttProjectName || project.name || '';
   if(projectSaved.date !== undefined) ganttReportDate = projectSaved.date || ganttReportDate || '';
+  if(Array.isArray(projectSaved.groups)) constructionGanttGroups = normalizeConstructionGanttGroups(projectSaved.groups);
   if(Array.isArray(projectSaved.unlinked)){
     ganttTasks = projectSaved.unlinked.map(normalizeStandaloneGanttTask);
     applySavedGanttOrder(projectSaved.order, []);
@@ -2971,13 +3081,15 @@ function loadConstructionGanttFromProject(){
   if(!ganttProjectName && project.name) ganttProjectName = project.name;
   try{
     localStorage.setItem(ganttStorageKey('construction'), JSON.stringify(ganttTasks));
-    localStorage.setItem(ganttMetaKey('construction'), JSON.stringify({ name: ganttProjectName, date: ganttReportDate }));
+    localStorage.setItem(ganttMetaKey('construction'), JSON.stringify({ name: ganttProjectName, date: ganttReportDate, groups: constructionGanttGroups }));
   }catch(e){}
 }
 function buildGanttProjectPayload(){
+  const constructionMode = isConstructionGanttMode();
   return {
     name: ganttProjectName || '',
     date: ganttReportDate || '',
+    groups: constructionMode ? constructionGanttGroups.map(g => ({ id: g.id || uid(), name: g.name || '' })) : undefined,
     // Lưu đúng thứ tự đang thấy trên Gantt, kể cả khi công việc tự thêm được kéo xen giữa công việc liên kết.
     order: ganttTasks.map(t => t.projectTaskId ? `linked:${t.projectTaskId}` : `unlinked:${t.id}`),
     unlinked: ganttTasks.filter(t => !t.projectTaskId).map(t => ({
@@ -2988,7 +3100,8 @@ function buildGanttProjectPayload(){
       end: t.end || '',
       progress: Math.min(100, Math.max(0, Number(t.progress) || 0)),
       unit: ganttUnit(t),
-      notes: t.notes || ''
+      notes: t.notes || '',
+      groupId: constructionMode ? constructionTaskGroupId(t) : undefined
     }))
   };
 }
@@ -3150,8 +3263,21 @@ function exportGanttExcel(){
   const wb = XLSX.utils.book_new();
 
   // Sheet 1: Danh sách công việc
-  const listHeaders = ['WBS', constructionMode ? 'Nội dung đầu mục thi công' : 'Nội dung công việc','Đơn vị thực hiện','Bắt đầu','Kết thúc','Tiến độ (%)','Số ngày','Ghi chú'];
-  const listRows = ganttTasks.map(t=>([
+  const listHeaders = constructionMode
+    ? ['Hạng mục','WBS','Nội dung đầu mục thi công','Đơn vị thực hiện','Bắt đầu','Kết thúc','Tiến độ (%)','Số ngày','Ghi chú']
+    : ['WBS','Nội dung công việc','Đơn vị thực hiện','Bắt đầu','Kết thúc','Tiến độ (%)','Số ngày','Ghi chú'];
+  const exportTaskRows = constructionMode ? orderedConstructionTasksForDisplay() : ganttTasks;
+  const listRows = exportTaskRows.map(t=>(constructionMode ? [
+    constructionGroupName(constructionTaskGroupId(t)),
+    t.wbs||'',
+    t.name||'',
+    ganttUnit(t),
+    t.start ? new Date(t.start).toLocaleDateString('vi-VN') : '',
+    t.end   ? new Date(t.end).toLocaleDateString('vi-VN')   : '',
+    Number(t.progress)||0,
+    (t.start&&t.end) ? daysBetween(t.start,t.end) : '',
+    t.notes||''
+  ] : [
     t.wbs||'',
     t.name||'',
     ganttUnit(t),
@@ -3163,7 +3289,7 @@ function exportGanttExcel(){
   ]));
   const listData = [listHeaders, ...listRows];
   const ws1 = XLSX.utils.aoa_to_sheet(listData);
-  ws1['!cols']=[{wch:8},{wch:40},{wch:24},{wch:14},{wch:14},{wch:14},{wch:10},{wch:30}];
+  ws1['!cols']= constructionMode ? [{wch:24},{wch:8},{wch:40},{wch:24},{wch:14},{wch:14},{wch:14},{wch:10},{wch:30}] : [{wch:8},{wch:40},{wch:24},{wch:14},{wch:14},{wch:14},{wch:10},{wch:30}];
   // Style header row
   const headerRange = XLSX.utils.decode_range(ws1['!ref']);
   for(let C=headerRange.s.c; C<=headerRange.e.c; C++){
@@ -3200,8 +3326,9 @@ function exportGanttExcel(){
     dateCols.forEach(d=> dayRow.push(d.getDate()));
 
     // Data rows
-    const dataRows = ganttTasks.map(t=>{
-      const row = [t.wbs||'', t.name||'', ganttUnit(t),
+    const excelRows = constructionMode ? constructionRowsWithGroups(false) : ganttTasks;
+    const dataRows = excelRows.map(t=>{
+      const row = [t.wbs||'', t.isConstructionGroup ? `Hạng mục: ${t.name||''}` : t.name||'', ganttUnit(t),
         t.start ? new Date(t.start).toLocaleDateString('vi-VN') : '',
         t.end   ? new Date(t.end).toLocaleDateString('vi-VN')   : '',
         (Number(t.progress)||0)+'%'
@@ -3234,6 +3361,7 @@ function exportGanttExcel(){
     ['Ngày báo cáo:', ganttReportDate ? new Date(ganttReportDate).toLocaleDateString('vi-VN') : new Date().toLocaleDateString('vi-VN')],
     [],
     ['Chỉ tiêu','Giá trị'],
+    ...(constructionMode ? [['Tổng số hạng mục', constructionGanttGroups.length]] : []),
     [constructionMode ? 'Tổng số đầu mục thi công' : 'Tổng số công việc', st.total],
     ['Hoàn thành (100%)', st.done],
     ['Đang tiến hành', st.ongoing],
@@ -3270,6 +3398,7 @@ function renderGanttTab(){
   const statsHtml = `
   <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-bottom:20px;">
     ${[
+      ...(constructionMode ? [['Tổng hạng mục', constructionGanttGroups.length, c.accent]] : []),
       [constructionMode ? 'Tổng đầu mục' : 'Tổng công việc', st.total, c.accent],
       ['Hoàn thành', st.done, c.green],
       ['Đang trễ hạn', st.late, c.red],
@@ -3293,8 +3422,25 @@ function renderGanttTab(){
   if(ganttActiveTab === 'list'){
     // --- Form nhập liệu ---
     const formHtml = `<div style="${cardStyle}">
+      ${constructionMode ? `<div style="margin-bottom:16px;padding:12px;border:1px solid ${c.border};border-radius:12px;background:${controlGlass};">
+        <h3 style="margin:0 0 10px; font-size:15px; font-weight:750;"><i class="ti ti-folder-plus" style="vertical-align:-2px;margin-right:6px;color:${c.accent};"></i>Thêm hạng mục</h3>
+        <div style="display:grid;grid-template-columns:minmax(180px,1fr) auto;gap:10px;align-items:end;">
+          <div>
+            <label style="font-size:12px;color:${c.sub};display:block;margin-bottom:5px;">Tên hạng mục</label>
+            <input id="gantt-new-group-name" type="text" placeholder="VD: Phần móng, phần thân, hoàn thiện..." style="width:100%;box-sizing:border-box;font-size:14px;padding:10px 12px;border:1px solid ${c.border};border-radius:10px;background:${c.inputBg};color:${c.text};"/>
+          </div>
+          <button id="gantt-add-group-btn" type="button" style="border:none;background:${c.green};color:#fff;font-size:14px;font-weight:700;padding:10px 16px;border-radius:10px;cursor:pointer;white-space:nowrap;"><i class="ti ti-plus" style="vertical-align:-2px;margin-right:4px;"></i>Thêm hạng mục</button>
+        </div>
+        ${constructionGanttGroups.length ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px;">${constructionGanttGroups.map(g => `<span style="display:inline-flex;align-items:center;gap:5px;border:1px solid ${c.border};background:${c.card};color:${c.text};border-radius:980px;padding:5px 7px 5px 9px;font-size:12px;font-weight:750;"><i class="ti ti-folder" style="color:${c.accent};"></i>${escapeHtml(g.name)}<button data-gantt-edit-group="${escapeHtml(g.id)}" type="button" title="Sửa hạng mục" style="border:none;background:transparent;color:${c.accent};cursor:pointer;padding:0 2px;font-size:13px;"><i class="ti ti-edit"></i></button><button data-gantt-del-group="${escapeHtml(g.id)}" type="button" title="Xóa hạng mục" style="border:none;background:transparent;color:${c.red};cursor:pointer;padding:0 2px;font-size:13px;"><i class="ti ti-x"></i></button></span>`).join('')}</div>` : `<p style="margin:9px 0 0;font-size:12px;color:${c.sub};">Tạo hạng mục trước, sau đó thêm các đầu mục thi công vào hạng mục tương ứng.</p>`}
+      </div>` : ''}
       <h3 style="margin:0 0 14px; font-size:16px; font-weight:650;"><i class="ti ti-plus-circle" style="vertical-align:-2px; margin-right:6px; color:${c.accent};"></i>Thêm ${taskNoun}</h3>
       <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; align-items:end;">
+        ${constructionMode ? `<div>
+          <label style="font-size:12px;color:${c.sub};display:block;margin-bottom:5px;">Hạng mục <span style="color:${c.red}">*</span></label>
+          <select id="gantt-new-group" style="width:100%;box-sizing:border-box;font-size:14px;padding:10px 12px;border:1px solid ${c.border};border-radius:10px;background:${c.inputBg};color:${c.text};">
+            ${constructionGroupOptionsHtml('', { allowUngrouped:false, placeholder:'Chọn hạng mục thi công' })}
+          </select>
+        </div>` : ''}
         <div style="grid-column:1/-1 !important">
           <label style="font-size:12px;color:${c.sub};display:block;margin-bottom:5px;">Nội dung ${taskNoun} <span style="color:${c.red}">*</span></label>
           <input id="gantt-new-name" type="text" placeholder="${constructionMode?'Tên đầu mục thi công...':'Tên công việc...'}" style="width:100%;box-sizing:border-box;font-size:14px;padding:10px 12px;border:1px solid ${c.border};border-radius:10px;background:${c.inputBg};color:${c.text};"/>
@@ -3360,9 +3506,11 @@ function renderGanttTab(){
             <span>Chưa mở dự án nào. Hãy quay lại <b>Danh mục dự án</b>, mở một dự án để danh sách công việc tự đồng bộ vào Gantt.</span>
           </div>`);
 
-    const tableRows = ganttTasks.length === 0
-      ? `<tr><td colspan="9" style="${tdStyle}text-align:center;color:${c.sub};padding:24px;">${constructionMode ? (currentProjectId ? 'Gantt thi công chưa có đầu mục nào. Dùng form bên trên để thêm đầu mục thi công.' : 'Hãy mở một dự án để tạo Gantt thi công riêng.') : (currentProjectId ? 'Dự án chưa có công việc nào. Thêm công việc ở bảng theo dõi hoặc dùng form bên dưới.' : 'Hãy mở một dự án để danh sách công việc tự đồng bộ vào đây.')}</td></tr>`
-      : ganttTasks.map((t,idx)=>{
+    const tableColCount = constructionMode ? 10 : 9;
+    const tableTaskRows = constructionMode ? orderedConstructionTasksForDisplay() : ganttTasks;
+    const tableRows = tableTaskRows.length === 0
+      ? `<tr><td colspan="${tableColCount}" style="${tdStyle}text-align:center;color:${c.sub};padding:24px;">${constructionMode ? (currentProjectId ? 'Gantt thi công chưa có đầu mục nào. Dùng form bên trên để thêm đầu mục thi công.' : 'Hãy mở một dự án để tạo Gantt thi công riêng.') : (currentProjectId ? 'Dự án chưa có công việc nào. Thêm công việc ở bảng theo dõi hoặc dùng form bên dưới.' : 'Hãy mở một dự án để danh sách công việc tự đồng bộ vào đây.')}</td></tr>`
+      : tableTaskRows.map((t,idx)=>{
           const barColor = ganttBarColor(t);
           const days = (t.start&&t.end) ? daysBetween(t.start,t.end) : '-';
           const prog = Number(t.progress)||0;
@@ -3376,11 +3524,21 @@ function renderGanttTab(){
           };
           const displayDateHtml = (value, source) => `${value ? formatDateVN(value) : `<span style="color:${c.sub};font-size:11px;font-style:italic;">Chưa có</span>`}${isLinked && source ? `<div style="font-size:10px;color:${c.sub};margin-top:2px;">${escapeHtml(source)}</div>` : ''}`;
 
+          const currentGroupId = constructionMode ? constructionTaskGroupId(t) : '';
+          const prevTask = idx > 0 ? tableTaskRows[idx - 1] : null;
+          const prevGroupId = constructionMode && prevTask ? constructionTaskGroupId(prevTask) : null;
+          const groupHeader = constructionMode && (idx === 0 || currentGroupId !== prevGroupId) ? constructionGroupHeaderHtml(currentGroupId, tableColCount, c) : '';
+
           if(ganttEditId === t.id){
-            return `<tr style="background:${c.info};">
+            return groupHeader + `<tr style="background:${c.info};">
               <td style="${tdCenterStyle}">
                 <input data-gantt-edit-field="wbs" value="${escapeHtml(t.wbs||'')}" style="width:60px;font-size:12px;padding:4px 6px;border:1px solid ${c.border};border-radius:6px;background:${c.inputBg};color:${c.text};"/>
               </td>
+              ${constructionMode ? `<td style="${tdStyle}">
+                <select data-gantt-edit-field="groupId" style="width:100%;min-width:150px;font-size:12px;padding:6px 8px;border:1px solid ${c.border};border-radius:6px;background:${c.inputBg};color:${c.text};">
+                  ${constructionGroupOptionsHtml(currentGroupId, { allowUngrouped:true })}
+                </select>
+              </td>` : ''}
               <td style="${tdStyle}">
                 ${isLinked
                   ? `<div style="display:flex;align-items:center;gap:6px;">
@@ -3419,8 +3577,9 @@ function renderGanttTab(){
             </tr>`;
           }
 
-          return `<tr data-gantt-row="${t.id}" draggable="true" style="transition:background .1s;cursor:grab;" onmouseover="this.style.background='${c.inputBg}'" onmouseout="this.style.background='transparent'">
+          return groupHeader + `<tr data-gantt-row="${t.id}" draggable="true" style="transition:background .1s;cursor:grab;" onmouseover="this.style.background='${c.inputBg}'" onmouseout="this.style.background='transparent'">
             <td style="${tdCenterStyle}font-weight:600;color:${c.accent};white-space:nowrap;"><span data-gantt-drag-handle title="Nhấn giữ và kéo để sắp xếp trên Gantt" style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:22px;border-radius:6px;color:${c.sub};cursor:grab;vertical-align:middle;margin-right:4px;"><i class="ti ti-grip-vertical" style="font-size:16px;"></i></span>${escapeHtml(t.wbs||'')}</td>
+            ${constructionMode ? `<td style="${tdStyle}color:${currentGroupId?c.text:c.sub};font-size:12px;font-weight:750;">${escapeHtml(constructionGroupName(currentGroupId))}</td>` : ''}
             <td style="${tdStyle}">
               <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
                 <span style="font-weight:500;">${escapeHtml(t.name||'')}</span>
@@ -3458,10 +3617,11 @@ function renderGanttTab(){
         </div>
       </div>
       <div style="overflow-x:auto;">
-        <table style="width:100%;border-collapse:collapse;min-width:860px;">
+        <table style="width:100%;border-collapse:collapse;min-width:${constructionMode?1040:860}px;">
           <thead>
             <tr>
               <th style="${thStyle}width:70px;">WBS</th>
+              ${constructionMode ? `<th style="${thStyle}min-width:150px;">Hạng mục</th>` : ''}
               <th style="${thStyle}min-width:200px;">Nội dung ${taskNoun}</th>
               <th style="${thStyle}min-width:150px;">Đơn vị thực hiện</th>
               <th style="${thStyle}width:110px;">Bắt đầu</th>
@@ -3511,6 +3671,7 @@ function renderGanttChart(c, cardStyle){
   const constructionMode = isConstructionGanttMode();
   const taskNoun = constructionMode ? 'đầu mục thi công' : 'công việc';
   const validTasks = ganttTasks.filter(t=>t.start&&t.end);
+  const chartRows = constructionMode ? constructionRowsWithGroups(false) : ganttTasks;
   if(validTasks.length === 0){
     return `<div style="${cardStyle}text-align:center;padding:48px;color:${c.sub};">
       <i class="ti ti-chart-gantt" style="font-size:48px;opacity:.3;display:block;margin-bottom:12px;"></i>
@@ -3616,10 +3777,11 @@ function renderGanttChart(c, cardStyle){
 
   // ── Hàng DỮ LIỆU (mỗi task) ─────────────────────────────────────────
   let dataRows = '';
-  ganttTasks.forEach((t, idx) => {
-    const rowBg = idx%2===0 ? BG : ROW_ALT;
-    const isBold = !t.start||!t.end||(t.wbs&&t.wbs.split('.').length<=1);
-    const label = (t.wbs?t.wbs+' ':'')+t.name;
+  chartRows.forEach((t, idx) => {
+    const isGroupRow = !!t.isConstructionGroup;
+    const rowBg = isGroupRow ? (isDark ? 'rgba(255,235,178,0.10)' : 'rgba(255,235,178,0.42)') : (idx%2===0 ? BG : ROW_ALT);
+    const isBold = isGroupRow || !t.start||!t.end||(t.wbs&&t.wbs.split('.').length<=1);
+    const label = isGroupRow ? `Hạng mục: ${t.name}` : (t.wbs?t.wbs+' ':'')+t.name;
     const displayLabel = label.length>36 ? label.slice(0,35)+'…' : label;
     const unitLabel = ganttUnit(t);
     const displayUnit = unitLabel.length>22 ? unitLabel.slice(0,21)+'...' : unitLabel;
@@ -3632,7 +3794,7 @@ function renderGanttChart(c, cardStyle){
                  box-shadow:2px 0 6px ${SHADOW_R};">
         <div style="height:${ROW_H}px;display:grid;grid-template-columns:${TASK_W}px ${UNIT_W}px;align-items:center;overflow:hidden;">
           <div style="padding:0 8px 0 10px;display:flex;align-items:center;min-width:0;overflow:hidden;">
-            ${t.projectTaskId?`<span style="display:inline-block;width:3px;height:18px;background:${c.accent};border-radius:2px;margin-right:7px;flex-shrink:0;"></span>`:''}
+            ${t.projectTaskId||isGroupRow?`<span style="display:inline-block;width:${isGroupRow?5:3}px;height:${isGroupRow?20:18}px;background:${isGroupRow?'#f0b84a':c.accent};border-radius:2px;margin-right:7px;flex-shrink:0;"></span>`:''}
             <span style="font-size:${isBold?12:11}px;font-weight:${isBold?700:400};color:${TEXT};
                          white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${escapeHtml(label)}">
               ${escapeHtml(displayLabel)}
@@ -3896,11 +4058,57 @@ function attachGanttEvents(){
   const repDate = section.querySelector('#gantt-report-date');
   if(repDate) repDate.onchange=()=>{ ganttReportDate=repDate.value; ganttSave(); };
 
+  const addGroupBtn = section.querySelector('#gantt-add-group-btn');
+  if(addGroupBtn) addGroupBtn.onclick=()=>{
+    const input = section.querySelector('#gantt-new-group-name');
+    const name = input ? input.value.trim() : '';
+    const errEl = section.querySelector('#gantt-form-err');
+    if(!name){ if(errEl){ errEl.style.display='block'; errEl.textContent='⚠ Vui lòng nhập tên hạng mục.'; } return; }
+    constructionGanttGroups.push({ id:uid(), name });
+    if(input) input.value='';
+    if(errEl) errEl.style.display='none';
+    ganttSave();
+    refreshGanttSection();
+  };
+  const groupNameInput = section.querySelector('#gantt-new-group-name');
+  if(groupNameInput) groupNameInput.onkeydown=e=>{ if(e.key==='Enter' && addGroupBtn) addGroupBtn.click(); };
+
+  section.querySelectorAll('[data-gantt-edit-group]').forEach(btn=>{
+    btn.onclick=()=>{
+      const group = constructionGroupById(btn.dataset.ganttEditGroup);
+      if(!group) return;
+      const next = prompt('Tên hạng mục:', group.name);
+      if(next === null) return;
+      const name = next.trim();
+      if(!name) return;
+      group.name = name;
+      ganttSave();
+      refreshGanttSection();
+    };
+  });
+  section.querySelectorAll('[data-gantt-del-group]').forEach(btn=>{
+    btn.onclick=()=>{
+      const groupId = btn.dataset.ganttDelGroup;
+      const group = constructionGroupById(groupId);
+      if(!group) return;
+      const count = constructionGroupTasks(groupId).length;
+      const msg = count
+        ? `Xóa hạng mục "${group.name}"? ${count} đầu mục bên trong sẽ chuyển sang "Chưa phân hạng mục".`
+        : `Xóa hạng mục "${group.name}"?`;
+      if(!confirm(msg)) return;
+      constructionGanttGroups = constructionGanttGroups.filter(g => g.id !== groupId);
+      ganttTasks.forEach(t=>{ if(t.groupId === groupId) t.groupId = ''; });
+      ganttSave();
+      refreshGanttSection();
+    };
+  });
+
   // Add task
   const addBtn = section.querySelector('#gantt-add-btn');
   if(addBtn) addBtn.onclick=()=>{
     const name = section.querySelector('#gantt-new-name').value.trim();
     const wbs  = section.querySelector('#gantt-new-wbs').value.trim();
+    const groupId = isConstructionGanttMode() ? ((section.querySelector('#gantt-new-group') || {}).value || '').trim() : '';
     const unit = section.querySelector('#gantt-new-unit').value.trim();
     const start= section.querySelector('#gantt-new-start').value;
     const end  = section.querySelector('#gantt-new-end').value;
@@ -3909,10 +4117,11 @@ function attachGanttEvents(){
     const errEl= section.querySelector('#gantt-form-err');
 
     if(!currentProjectId){ errEl.style.display='block'; errEl.textContent='⚠ Vui lòng mở một dự án trước khi thêm dữ liệu Gantt.'; return; }
+    if(isConstructionGanttMode() && !groupId){ errEl.style.display='block'; errEl.textContent='⚠ Vui lòng tạo và chọn hạng mục trước khi thêm đầu mục thi công.'; return; }
     if(!name){ errEl.style.display='block'; errEl.textContent=`⚠ Vui lòng nhập nội dung ${isConstructionGanttMode() ? 'đầu mục thi công' : 'công việc'}.`; return; }
     if(start && end && new Date(end)<new Date(start)){ errEl.style.display='block'; errEl.textContent='⚠ Ngày kết thúc phải sau ngày bắt đầu.'; return; }
     errEl.style.display='none';
-    ganttTasks.push({ id:uid(), wbs, name, unit, start, end, progress:Math.min(100,Math.max(0,prog)), notes });
+    ganttTasks.push({ id:uid(), wbs, name, unit, start, end, progress:Math.min(100,Math.max(0,prog)), notes, groupId });
     ganttSave();
     section.querySelector('#gantt-new-name').value='';
     section.querySelector('#gantt-new-wbs').value='';
@@ -3961,6 +4170,7 @@ function attachGanttEvents(){
           return;
         }
         t.wbs=get('wbs');
+        if(isConstructionGanttMode()) t.groupId=get('groupId');
         t.unit=get('unit');
         if(nameEl) t.name=nameEl.value;
         if(!isLinkedTask){ t.start=startVal; t.end=endVal; }
@@ -4013,6 +4223,7 @@ function attachGanttEvents(){
     if(isConstructionGanttMode()){
       if(!confirm('Xóa toàn bộ đầu mục trong Gantt thi công?')) return;
       ganttTasks = [];
+      constructionGanttGroups = [];
       ganttSave();
       refreshGanttSection();
       return;
@@ -4146,6 +4357,7 @@ function buildFullSVG(showUnit=true){
   const constructionMode = isConstructionGanttMode();
   const taskNoun = constructionMode ? 'đầu mục thi công' : 'công việc';
   const validTasks = ganttTasks.filter(t=>t.start&&t.end);
+  const chartRows = constructionMode ? constructionRowsWithGroups(false) : ganttTasks;
   if(!validTasks.length) return null;
 
   const minDate = new Date(Math.min(...validTasks.map(t=>new Date(t.start))));
@@ -4162,7 +4374,7 @@ function buildFullSVG(showUnit=true){
   const HEADER_H= 52;
 
   const chartW = LABEL_W + totalDays * COL_W;
-  const chartH = HEADER_H + ganttTasks.length * ROW_H + 2;
+  const chartH = HEADER_H + chartRows.length * ROW_H + 2;
 
   // Month groups
   const months=[];
@@ -4206,9 +4418,11 @@ function buildFullSVG(showUnit=true){
   s+=`<line x1="0" y1="${HEADER_H}" x2="${chartW}" y2="${HEADER_H}" stroke="rgba(0,0,0,0.18)" stroke-width="1.2"/>`;
 
   // Row lines + alternating + labels + bars
-  ganttTasks.forEach((t,idx)=>{
+  chartRows.forEach((t,idx)=>{
     const y=HEADER_H+idx*ROW_H;
-    if(idx%2===0) s+=`<rect x="0" y="${y}" width="${chartW}" height="${ROW_H}" fill="rgba(0,0,0,0.018)"/>`;
+    const isGroupRow = !!t.isConstructionGroup;
+    if(isGroupRow) s+=`<rect x="0" y="${y}" width="${chartW}" height="${ROW_H}" fill="rgba(255,235,178,0.38)"/>`;
+    else if(idx%2===0) s+=`<rect x="0" y="${y}" width="${chartW}" height="${ROW_H}" fill="rgba(0,0,0,0.018)"/>`;
     s+=`<line x1="0" y1="${y+ROW_H}" x2="${chartW}" y2="${y+ROW_H}" stroke="rgba(0,0,0,0.08)" stroke-width="0.7"/>`;
 
     // Weekend column shading
@@ -4218,8 +4432,8 @@ function buildFullSVG(showUnit=true){
         s+=`<rect x="${LABEL_W+i*COL_W}" y="${y}" width="${COL_W}" height="${ROW_H}" fill="rgba(0,0,0,0.028)"/>`;
     }
 
-    const isBold=!t.start||!t.end||(t.wbs&&t.wbs.split('.').length<=1);
-    const label=((t.wbs?t.wbs+' ':'')+t.name).slice(0,showUnit?36:48);
+    const isBold=isGroupRow||!t.start||!t.end||(t.wbs&&t.wbs.split('.').length<=1);
+    const label=(isGroupRow ? `Hạng mục: ${t.name}` : ((t.wbs?t.wbs+' ':'')+t.name)).slice(0,showUnit?36:48);
     const unit=ganttUnit(t).slice(0,24);
     s+=`<text x="8" y="${y+ROW_H/2+4}" text-anchor="start" font-size="${isBold?11:10}" font-weight="${isBold?'bold':'normal'}" fill="#1a2a35" ${FONT}>${escapeHtml(label)}</text>`;
     if(showUnit){
