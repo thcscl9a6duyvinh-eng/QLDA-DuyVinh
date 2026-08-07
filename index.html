@@ -442,6 +442,11 @@
     display: grid;
     gap: 8px;
   }
+  .dashboard-update-notice.is-current {
+    border-color: rgba(239,247,255,0.22);
+    background: rgba(255,255,255,0.06);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.12);
+  }
   .dashboard-update-title {
     display: flex;
     align-items: center;
@@ -484,6 +489,113 @@
     cursor: wait;
     opacity: 0.76;
     transform: none;
+  }
+  .app-update-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    background: rgba(6,18,36,0.58);
+    backdrop-filter: blur(8px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    box-sizing: border-box;
+  }
+  .app-update-modal {
+    width: min(440px, 100%);
+    border: 1px solid rgba(255,255,255,0.72);
+    border-radius: 14px;
+    background: linear-gradient(180deg, rgba(248,252,255,0.98), rgba(229,242,252,0.96));
+    color: #10213c;
+    box-shadow: 0 24px 70px rgba(0,0,0,0.32), inset 0 1px 0 rgba(255,255,255,0.86);
+    padding: 20px;
+    box-sizing: border-box;
+    font-family: 'Be Vietnam Pro', 'Segoe UI', sans-serif;
+  }
+  .app-update-modal-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 0 10px;
+    font-size: 19px;
+    line-height: 1.3;
+    font-weight: 850;
+    letter-spacing: 0;
+  }
+  .app-update-modal-body {
+    margin: 0;
+    color: #33465e;
+    font-size: 13.5px;
+    line-height: 1.55;
+    font-weight: 600;
+  }
+  .app-update-modal-notes {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid rgba(16,33,60,0.12);
+    background: rgba(255,255,255,0.74);
+    color: #20364f;
+    font-size: 12.5px;
+    line-height: 1.45;
+    font-weight: 650;
+  }
+  .app-update-progress-track {
+    margin-top: 16px;
+    height: 12px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(16,33,60,0.12);
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.12);
+  }
+  .app-update-progress-fill {
+    height: 100%;
+    width: 0;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #0f67bd, #18a889, #f0b84a);
+    transition: width .22s ease;
+  }
+  .app-update-progress-text {
+    margin-top: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    color: #26384d;
+    font-size: 12.5px;
+    font-weight: 800;
+  }
+  .app-update-modal-actions {
+    margin-top: 18px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .app-update-action {
+    min-height: 38px;
+    border-radius: 10px;
+    border: 1px solid rgba(16,33,60,0.15);
+    padding: 9px 14px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 13px;
+    font-weight: 850;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+  }
+  .app-update-action.primary {
+    border-color: rgba(15,103,189,0.38);
+    background: linear-gradient(135deg, #0f67bd, #1682d8);
+    color: #fff;
+    box-shadow: 0 10px 24px rgba(15,103,189,0.24);
+  }
+  .app-update-action.secondary {
+    background: rgba(255,255,255,0.70);
+    color: #26384d;
   }
   .dashboard-nav-item {
     width: 100%;
@@ -938,6 +1050,7 @@
 </head>
 <body style="margin:0; background:#0b1524;">
 <div id="app"></div>
+<div id="appUpdateModalHolder"></div>
 <div id="gantt-print-frame"></div>
 <script>
 /*
@@ -960,9 +1073,11 @@ const PROJECT_GROUP_OPTIONS = [
   { key:'qlda_xa', label:'QLDA các xã', icon:'building-community' },
   { key:'qlda_ban', label:'QLDA của Ban', icon:'building-bank' }
 ];
-const APP_VERSION = '1.0.2';
+const APP_VERSION = '1.0.4';
 const VERSION_MANIFEST_URL = 'version.json';
-const VERSION_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+const VERSION_CHECK_INTERVAL_MS = 60 * 1000;
+const APP_UPDATE_DISMISSED_KEY = 'cpt-update-dismissed-version-v1';
+const APP_UPDATE_PENDING_KEY = 'cpt-update-pending-version-v1';
 const ADMIN_EMAILS = [
   // Có thể thêm email admin ở đây nếu không dùng app_metadata trong Supabase.
   // Ví dụ: 'ten.admin@coquan.gov.vn'
@@ -994,6 +1109,8 @@ let showOnlinePanel = false;
 let appUpdateInfo = { available:false, version:APP_VERSION, notes:'', error:'', checkedAt:0 };
 let appUpdateChecking = false;
 let appUpdateTimer = null;
+let appUpdateModal = { open:false, phase:'available', version:'', notes:'', progress:0, message:'' };
+let appUpdateProgressTimer = null;
 
 // ============ GANTT STATE ============
 let ganttTasks = [];          // [{id, wbs, name, unit, start, end, progress, group}]
@@ -1023,17 +1140,76 @@ function versionManifestUrl(){
   return url.toString();
 }
 function renderUpdateNoticeHtml(){
-  if(!appUpdateInfo.available) return '';
-  const notes = appUpdateInfo.notes ? `<div class="dashboard-update-notes">${escapeHtml(appUpdateInfo.notes)}</div>` : '';
-  return `<div class="dashboard-update-notice" role="status" aria-live="polite">
-    <div class="dashboard-update-title"><i class="ti ti-bell-ringing" aria-hidden="true"></i><span>Có phiên bản mới ${escapeHtml(appUpdateInfo.version)}</span></div>
+  const hasUpdate = !!appUpdateInfo.available;
+  const notes = hasUpdate && appUpdateInfo.notes ? `<div class="dashboard-update-notes">${escapeHtml(appUpdateInfo.notes)}</div>` : '';
+  const title = hasUpdate ? `Có phiên bản mới ${escapeHtml(appUpdateInfo.version)}` : `Phiên bản hiện tại ${escapeHtml(APP_VERSION)}`;
+  const icon = hasUpdate ? 'bell-ringing' : 'refresh';
+  return `<div class="dashboard-update-notice ${hasUpdate ? 'is-available' : 'is-current'}" role="status" aria-live="polite">
+    <div class="dashboard-update-title"><i class="ti ti-${icon}" aria-hidden="true"></i><span>${title}</span></div>
     ${notes}
     <button data-action="update-app-version" class="dashboard-update-btn" type="button"><i class="ti ti-refresh" aria-hidden="true"></i><span>Cập nhật phiên bản mới</span></button>
   </div>`;
 }
+function renderAppUpdateModalHtml(){
+  if(!appUpdateModal.open) return '';
+  const phase = appUpdateModal.phase || 'available';
+  const version = appUpdateModal.version || appUpdateInfo.version || APP_VERSION;
+  const notes = appUpdateModal.notes ? `<div class="app-update-modal-notes">${escapeHtml(appUpdateModal.notes)}</div>` : '';
+  if(phase === 'updating'){
+    const progress = Math.max(0, Math.min(100, Number(appUpdateModal.progress) || 0));
+    return `<div class="app-update-modal-backdrop" role="dialog" aria-modal="true" aria-live="polite">
+      <div class="app-update-modal">
+        <h2 class="app-update-modal-title"><i class="ti ti-loader-2" aria-hidden="true"></i><span>Đang cập nhật phiên bản mới</span></h2>
+        <p class="app-update-modal-body">${escapeHtml(appUpdateModal.message || 'Hệ thống đang tải lại dữ liệu phiên bản mới.')}</p>
+        <div class="app-update-progress-track" aria-label="Tiến trình cập nhật"><div class="app-update-progress-fill" style="width:${progress}%;"></div></div>
+        <div class="app-update-progress-text"><span>Tiến trình cập nhật</span><strong>${progress}%</strong></div>
+      </div>
+    </div>`;
+  }
+  if(phase === 'done'){
+    return `<div class="app-update-modal-backdrop" role="dialog" aria-modal="true">
+      <div class="app-update-modal">
+        <h2 class="app-update-modal-title"><i class="ti ti-circle-check" aria-hidden="true"></i><span>Đã cập nhật phiên bản mới</span></h2>
+        <p class="app-update-modal-body">Phiên bản ${escapeHtml(version)} đã sẵn sàng để sử dụng.</p>
+        <div class="app-update-modal-actions">
+          <button data-action="app-update-close" class="app-update-action primary" type="button"><i class="ti ti-check" aria-hidden="true"></i><span>Đóng</span></button>
+        </div>
+      </div>
+    </div>`;
+  }
+  if(phase === 'latest'){
+    return `<div class="app-update-modal-backdrop" role="dialog" aria-modal="true">
+      <div class="app-update-modal">
+        <h2 class="app-update-modal-title"><i class="ti ti-shield-check" aria-hidden="true"></i><span>Đang dùng phiên bản mới nhất</span></h2>
+        <p class="app-update-modal-body">Hiện tại web đang ở phiên bản ${escapeHtml(APP_VERSION)}.</p>
+        <div class="app-update-modal-actions">
+          <button data-action="app-update-close" class="app-update-action primary" type="button"><i class="ti ti-check" aria-hidden="true"></i><span>Đóng</span></button>
+        </div>
+      </div>
+    </div>`;
+  }
+  return `<div class="app-update-modal-backdrop" role="dialog" aria-modal="true">
+    <div class="app-update-modal">
+      <h2 class="app-update-modal-title"><i class="ti ti-bell-ringing" aria-hidden="true"></i><span>Có phiên bản mới ${escapeHtml(version)}</span></h2>
+      <p class="app-update-modal-body">Bạn có thể cập nhật ngay để dùng bản mới, hoặc để sau nếu đang làm dở công việc.</p>
+      ${notes}
+      <div class="app-update-modal-actions">
+        <button data-action="app-update-later" class="app-update-action secondary" type="button"><i class="ti ti-clock" aria-hidden="true"></i><span>Để sau</span></button>
+        <button data-action="app-update-confirm" class="app-update-action primary" type="button"><i class="ti ti-refresh" aria-hidden="true"></i><span>Cập nhật phiên bản mới</span></button>
+      </div>
+    </div>
+  </div>`;
+}
 function attachVersionUpdateButton(){
-  const btn = root.querySelector('[data-action="update-app-version"]');
-  if(btn) btn.onclick = applyAppUpdate;
+  document.querySelectorAll('[data-action="update-app-version"]').forEach(btn => {
+    btn.onclick = handleAppUpdateButtonClick;
+  });
+  attachAppUpdateModalEvents();
+}
+function attachAppUpdateModalEvents(){
+  document.querySelectorAll('[data-action="app-update-confirm"]').forEach(btn => btn.onclick = applyAppUpdate);
+  document.querySelectorAll('[data-action="app-update-later"]').forEach(btn => btn.onclick = dismissAppUpdateForNow);
+  document.querySelectorAll('[data-action="app-update-close"]').forEach(btn => btn.onclick = closeAppUpdateModal);
 }
 function refreshAppUpdateNotice(){
   const holder = document.getElementById('appUpdateNoticeHolder');
@@ -1041,10 +1217,48 @@ function refreshAppUpdateNotice(){
   holder.innerHTML = renderUpdateNoticeHtml();
   attachVersionUpdateButton();
 }
-async function checkForAppUpdate(){
-  if(appUpdateChecking) return;
+function refreshAppUpdateModal(){
+  const holder = document.getElementById('appUpdateModalHolder');
+  if(!holder) return;
+  holder.innerHTML = renderAppUpdateModalHtml();
+  attachAppUpdateModalEvents();
+}
+function showAppUpdatePopup(force=false){
+  if(!appUpdateInfo.available) return;
+  try{
+    const dismissedVersion = localStorage.getItem(APP_UPDATE_DISMISSED_KEY);
+    if(!force && dismissedVersion === appUpdateInfo.version) return;
+  }catch(e){}
+  appUpdateModal = {
+    open:true,
+    phase:'available',
+    version:appUpdateInfo.version,
+    notes:appUpdateInfo.notes || '',
+    progress:0,
+    message:''
+  };
+  refreshAppUpdateModal();
+}
+function dismissAppUpdateForNow(){
+  try{
+    if(appUpdateInfo.version) localStorage.setItem(APP_UPDATE_DISMISSED_KEY, appUpdateInfo.version);
+  }catch(e){}
+  closeAppUpdateModal();
+}
+function closeAppUpdateModal(){
+  if(appUpdateModal.phase === 'updating') return;
+  appUpdateModal = { ...appUpdateModal, open:false };
+  refreshAppUpdateModal();
+}
+function showLatestVersionPopup(){
+  appUpdateModal = { open:true, phase:'latest', version:APP_VERSION, notes:'', progress:0, message:'' };
+  refreshAppUpdateModal();
+}
+async function checkForAppUpdate(options={}){
+  if(appUpdateChecking) return appUpdateInfo;
   appUpdateChecking = true;
   const wasAvailable = appUpdateInfo.available;
+  const previousVersion = appUpdateInfo.version;
   try{
     const res = await fetch(versionManifestUrl(), { cache:'no-store' });
     if(!res.ok) throw new Error('Không đọc được version.json');
@@ -1058,31 +1272,104 @@ async function checkForAppUpdate(){
       error: '',
       checkedAt: Date.now()
     };
-    if(appUpdateInfo.available || wasAvailable) refreshAppUpdateNotice();
+    const becameAvailable = appUpdateInfo.available && (!wasAvailable || previousVersion !== appUpdateInfo.version);
+    refreshAppUpdateNotice();
+    if(appUpdateInfo.available && (becameAvailable || options.forcePopup)) showAppUpdatePopup(!!options.forcePopup);
   }catch(e){
     appUpdateInfo = { ...appUpdateInfo, error: e.message || 'Không kiểm tra được phiên bản mới', checkedAt: Date.now() };
   }finally{
     appUpdateChecking = false;
   }
+  return appUpdateInfo;
 }
 function startAppVersionChecks(){
   if(appUpdateTimer) return;
   checkForAppUpdate();
   appUpdateTimer = setInterval(checkForAppUpdate, VERSION_CHECK_INTERVAL_MS);
-  window.addEventListener('focus', checkForAppUpdate);
+  window.addEventListener('focus', ()=>checkForAppUpdate());
   document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) checkForAppUpdate(); });
 }
-function applyAppUpdate(){
-  const btn = root.querySelector('[data-action="update-app-version"]');
-  if(btn){
-    btn.disabled = true;
-    btn.innerHTML = '<i class="ti ti-loader-2" aria-hidden="true"></i><span>Đang cập nhật...</span>';
+function setUpdateButtonsLoading(isLoading){
+  document.querySelectorAll('[data-action="update-app-version"]').forEach(btn => {
+    btn.disabled = !!isLoading;
+    btn.innerHTML = isLoading
+      ? '<i class="ti ti-loader-2" aria-hidden="true"></i><span>Đang kiểm tra...</span>'
+      : '<i class="ti ti-refresh" aria-hidden="true"></i><span>Cập nhật phiên bản mới</span>';
+  });
+}
+async function handleAppUpdateButtonClick(){
+  if(appUpdateChecking) return;
+  if(appUpdateInfo.available){
+    showAppUpdatePopup(true);
+    return;
   }
+  setUpdateButtonsLoading(true);
+  await checkForAppUpdate({ forcePopup:true, manual:true });
+  setUpdateButtonsLoading(false);
+  if(!appUpdateInfo.available) showLatestVersionPopup();
+}
+function applyAppUpdate(){
   const nextVersion = appUpdateInfo.version || APP_VERSION;
-  const url = new URL(window.location.href);
-  url.searchParams.set('v', nextVersion);
-  url.searchParams.set('updated', Date.now().toString());
-  window.location.replace(url.toString());
+  clearInterval(appUpdateProgressTimer);
+  let progress = 0;
+  appUpdateModal = {
+    open:true,
+    phase:'updating',
+    version:nextVersion,
+    notes:appUpdateInfo.notes || '',
+    progress:0,
+    message:'Đang chuẩn bị tải phiên bản mới...'
+  };
+  refreshAppUpdateModal();
+
+  const setProgress = (value, message) => {
+    progress = Math.max(progress, Math.min(100, Math.round(value)));
+    appUpdateModal = { ...appUpdateModal, progress, message };
+    refreshAppUpdateModal();
+  };
+  const fetchFreshFiles = Promise.allSettled([
+    fetch(versionManifestUrl(), { cache:'no-store' }),
+    fetch(new URL(`index.html?_=${Date.now()}`, window.location.href).toString(), { cache:'no-store' })
+  ]);
+  if('caches' in window){
+    fetchFreshFiles.then(() => caches.keys()).then(keys => Promise.allSettled(keys.map(key => caches.delete(key)))).catch(()=>{});
+  }
+  appUpdateProgressTimer = setInterval(()=>{
+    const step = progress < 45 ? 9 : progress < 78 ? 6 : progress < 94 ? 3 : 1;
+    const message = progress < 45 ? 'Đang tải thông tin phiên bản...' : progress < 78 ? 'Đang làm mới dữ liệu giao diện...' : 'Đang hoàn tất cập nhật...';
+    setProgress(Math.min(98, progress + step), message);
+  }, 160);
+
+  fetchFreshFiles.finally(()=>{
+    setTimeout(()=>{
+      clearInterval(appUpdateProgressTimer);
+      setProgress(100, 'Cập nhật hoàn tất, đang mở lại giao diện...');
+      try{ localStorage.setItem(APP_UPDATE_PENDING_KEY, nextVersion); }catch(e){}
+      setTimeout(()=>{
+        const url = new URL(window.location.href);
+        url.searchParams.set('v', nextVersion);
+        url.searchParams.set('updated', Date.now().toString());
+        window.location.replace(url.toString());
+      }, 750);
+    }, 1400);
+  });
+}
+function hydrateCompletedAppUpdateNotice(){
+  try{
+    const pendingVersion = localStorage.getItem(APP_UPDATE_PENDING_KEY);
+    if(!pendingVersion) return;
+    if(compareVersions(APP_VERSION, pendingVersion) < 0) return;
+    localStorage.removeItem(APP_UPDATE_PENDING_KEY);
+    localStorage.removeItem(APP_UPDATE_DISMISSED_KEY);
+    appUpdateModal = {
+      open:true,
+      phase:'done',
+      version:pendingVersion,
+      notes:'',
+      progress:100,
+      message:`Đã cập nhật phiên bản mới ${pendingVersion}.`
+    };
+  }catch(e){}
 }
 function nowIso(){ return new Date().toISOString(); }
 function isOwner(p){ return currentUser && p && p.owner_id === currentUser.id; }
@@ -2609,6 +2896,7 @@ function drawCharts(project, c){
 // Dữ liệu Gantt được lưu theo từng dự án. localStorage chỉ là bộ đệm nhanh;
 // bản chính của các công việc liên kết sẽ được ghi ẩn vào Supabase qua cột notes.
 let ganttSupabaseSaveTimer = null;
+let ganttDirtyTaskIds = new Set();
 function activeGanttMode(){
   return normalizeGanttViewMode(ganttViewMode);
 }
@@ -2633,6 +2921,7 @@ function ganttSave(){
   // Cực quan trọng: cập nhật ngay bản ghi cục bộ của dự án.
   // Nếu chưa làm bước này, vừa kéo-thả xong mà tick/render lại thì syncGanttFromProject()
   // sẽ đọc funding_source cũ và kéo công việc về vị trí cũ trước khi Supabase kịp lưu.
+  updateLocalLinkedGanttTaskSnapshots();
   updateLocalGanttProjectSnapshot();
   scheduleGanttSupabaseSave();
 }
@@ -2703,6 +2992,34 @@ function buildGanttProjectPayload(){
     }))
   };
 }
+function buildLinkedGanttTaskPayload(gt){
+  const payload = {
+    wbs: gt.wbs || '',
+    unit: ganttUnit(gt),
+    notes: gt.notes || ''
+  };
+  if(gt.progressManual === true){
+    payload.progress = clampGanttProgress(gt.progress);
+    payload.progressManual = true;
+  }
+  return payload;
+}
+function updateLocalLinkedGanttTaskSnapshots(){
+  if(isConstructionGanttMode()) return;
+  const project = projects.find(p => p.id === currentProjectId);
+  if(!project) return;
+  const projectTasks = project.tasks || [];
+  ganttTasks.forEach(gt => {
+    if(!gt.projectTaskId) return;
+    const pt = projectTasks.find(x => x.id === gt.projectTaskId);
+    if(!pt) return;
+    const nextNotes = setGanttSyncInNotes(pt.notes || '', buildLinkedGanttTaskPayload(gt));
+    if(nextNotes !== (pt.notes || '')){
+      touchLocalTask(pt.id, { notes: nextNotes });
+      ganttDirtyTaskIds.add(pt.id);
+    }
+  });
+}
 function updateLocalGanttProjectSnapshot(){
   const project = projects.find(p => p.id === currentProjectId);
   if(!project) return;
@@ -2745,25 +3062,18 @@ async function saveGanttToSupabase(){
     return;
   }
   const updates = [];
+  const savedTaskIds = [];
   const projectTasks = project.tasks || [];
   for(const gt of ganttTasks){
     if(!gt.projectTaskId) continue;
     const pt = projectTasks.find(x => x.id === gt.projectTaskId);
     if(!pt) continue;
-    const keepManualProgress = gt.progressManual === true;
-    const payload = {
-      wbs: gt.wbs || '',
-      unit: ganttUnit(gt),
-      notes: gt.notes || ''
-    };
-    if(keepManualProgress){
-      payload.progress = clampGanttProgress(gt.progress);
-      payload.progressManual = true;
-    }
+    const payload = buildLinkedGanttTaskPayload(gt);
     const nextNotes = setGanttSyncInNotes(pt.notes || '', payload);
-    if(nextNotes !== (pt.notes || '')){
+    if(nextNotes !== (pt.notes || '') || ganttDirtyTaskIds.has(pt.id)){
       touchLocalTask(pt.id, { notes: nextNotes });
       updates.push(db.from('tasks').update({ notes: nextNotes, updated_at: nowIso() }).eq('id', pt.id));
+      savedTaskIds.push(pt.id);
     }
   }
   // Lưu thêm meta và các công việc Gantt tạo riêng trực tiếp trong Gantt vào trường Nguồn vốn của dự án.
@@ -2780,6 +3090,7 @@ async function saveGanttToSupabase(){
       const err = results.find(r => r && r.error);
       if(err) throw err.error;
     }
+    savedTaskIds.forEach(id => ganttDirtyTaskIds.delete(id));
     statusOk = true;
     statusText = 'Đã tự động lưu Gantt.';
   }catch(e){
@@ -4038,7 +4349,9 @@ window._clearGanttProgressOverride = clearGanttProgressOverride;
 
 // ==================== END GANTT MODULE ====================
 
+hydrateCompletedAppUpdateNotice();
 render();
+refreshAppUpdateModal();
 init();
 startAppVersionChecks();
 // Không tự tải lại dữ liệu theo chu kỳ, tránh làm mất nội dung người dùng đang nhập.

@@ -1,4 +1,4 @@
 {
-  "version": "1.0.2",
-  "notes": "Bổ sung Sơ đồ Gantt thi công độc lập trong từng dự án."
+  "version": "1.0.4",
+  "notes": "Bổ sung nút cập nhật phiên bản mới, popup thông báo bản mới và tiến trình cập nhật 0-100%."
 }
