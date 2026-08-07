@@ -1073,11 +1073,12 @@ const PROJECT_GROUP_OPTIONS = [
   { key:'qlda_xa', label:'QLDA các xã', icon:'building-community' },
   { key:'qlda_ban', label:'QLDA của Ban', icon:'building-bank' }
 ];
-const APP_VERSION = '1.0.5';
+const APP_VERSION = '1.0.6';
 const VERSION_MANIFEST_URL = 'version.json';
 const VERSION_CHECK_INTERVAL_MS = 60 * 1000;
 const APP_UPDATE_DISMISSED_KEY = 'cpt-update-dismissed-version-v1';
 const APP_UPDATE_PENDING_KEY = 'cpt-update-pending-version-v1';
+const APP_UPDATE_SW_URL = 'sw.js';
 const ADMIN_EMAILS = [
   // Có thể thêm email admin ở đây nếu không dùng app_metadata trong Supabase.
   // Ví dụ: 'ten.admin@coquan.gov.vn'
@@ -1111,6 +1112,7 @@ let appUpdateChecking = false;
 let appUpdateTimer = null;
 let appUpdateModal = { open:false, phase:'available', version:'', notes:'', progress:0, message:'' };
 let appUpdateProgressTimer = null;
+let appUpdateServiceWorkerReady = null;
 
 // ============ GANTT STATE ============
 let ganttTasks = [];          // [{id, wbs, name, unit, start, end, progress, group}]
@@ -1290,6 +1292,34 @@ function startAppVersionChecks(){
   window.addEventListener('focus', ()=>checkForAppUpdate());
   document.addEventListener('visibilitychange', ()=>{ if(!document.hidden) checkForAppUpdate(); });
 }
+function canUseAppUpdateServiceWorker(){
+  return 'serviceWorker' in navigator && (window.location.protocol === 'https:' || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+}
+function registerAppUpdateServiceWorker(){
+  if(!canUseAppUpdateServiceWorker()) return;
+  appUpdateServiceWorkerReady = navigator.serviceWorker.register(APP_UPDATE_SW_URL, { scope:'./' })
+    .then(()=>navigator.serviceWorker.ready)
+    .catch(e=>{ console.warn('Không đăng ký được bộ giữ phiên bản cũ:', e); return null; });
+}
+async function cacheAppVersionBeforeReload(nextVersion){
+  if(!canUseAppUpdateServiceWorker()) return false;
+  const registration = await (appUpdateServiceWorkerReady || navigator.serviceWorker.ready).catch(()=>null);
+  const worker = registration && (registration.active || registration.waiting || registration.installing);
+  if(!worker) return false;
+  return await new Promise(resolve=>{
+    const channel = new MessageChannel();
+    const timer = setTimeout(()=>resolve(false), 9000);
+    channel.port1.onmessage = event=>{
+      clearTimeout(timer);
+      resolve(!!(event.data && event.data.ok));
+    };
+    worker.postMessage({
+      type:'CACHE_APP_VERSION',
+      version: nextVersion,
+      indexUrl: new URL('index.html', window.location.href).toString()
+    }, [channel.port2]);
+  }).catch(()=>false);
+}
 function setUpdateButtonsLoading(isLoading){
   document.querySelectorAll('[data-action="update-app-version"]').forEach(btn => {
     btn.disabled = !!isLoading;
@@ -1328,20 +1358,20 @@ function applyAppUpdate(){
     appUpdateModal = { ...appUpdateModal, progress, message };
     refreshAppUpdateModal();
   };
-  const fetchFreshFiles = Promise.allSettled([
-    fetch(versionManifestUrl(), { cache:'no-store' }),
-    fetch(new URL(`index.html?_=${Date.now()}`, window.location.href).toString(), { cache:'no-store' })
-  ]);
-  if('caches' in window){
-    fetchFreshFiles.then(() => caches.keys()).then(keys => Promise.allSettled(keys.map(key => caches.delete(key)))).catch(()=>{});
-  }
+  const updateFreshFiles = cacheAppVersionBeforeReload(nextVersion).then(swCached=>{
+    if(swCached) return true;
+    return Promise.allSettled([
+      fetch(versionManifestUrl(), { cache:'no-store' }),
+      fetch(new URL(`index.html?_=${Date.now()}`, window.location.href).toString(), { cache:'no-store' })
+    ]).then(()=>false);
+  });
   appUpdateProgressTimer = setInterval(()=>{
     const step = progress < 45 ? 9 : progress < 78 ? 6 : progress < 94 ? 3 : 1;
     const message = progress < 45 ? 'Đang tải thông tin phiên bản...' : progress < 78 ? 'Đang làm mới dữ liệu giao diện...' : 'Đang hoàn tất cập nhật...';
     setProgress(Math.min(98, progress + step), message);
   }, 160);
 
-  fetchFreshFiles.finally(()=>{
+  updateFreshFiles.finally(()=>{
     setTimeout(()=>{
       clearInterval(appUpdateProgressTimer);
       setProgress(100, 'Cập nhật hoàn tất, đang mở lại giao diện...');
@@ -4566,6 +4596,7 @@ window._clearGanttProgressOverride = clearGanttProgressOverride;
 hydrateCompletedAppUpdateNotice();
 render();
 refreshAppUpdateModal();
+registerAppUpdateServiceWorker();
 init();
 startAppVersionChecks();
 // Không tự tải lại dữ liệu theo chu kỳ, tránh làm mất nội dung người dùng đang nhập.

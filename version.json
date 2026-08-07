@@ -1,4 +1,4 @@
 {
-  "version": "1.0.5",
-  "notes": "Bổ sung Hạng mục trong Gantt thi công để gom nhiều đầu mục thi công theo từng nhóm."
+  "version": "1.0.6",
+  "notes": "Sửa cơ chế cập nhật: web chỉ thông báo bản mới và chỉ tải bản mới khi người dùng bấm cập nhật."
 }
