@@ -1073,7 +1073,7 @@ const PROJECT_GROUP_OPTIONS = [
   { key:'qlda_xa', label:'QLDA các xã', icon:'building-community' },
   { key:'qlda_ban', label:'QLDA của Ban', icon:'building-bank' }
 ];
-const APP_VERSION = '1.0.6';
+const APP_VERSION = '1.0.7';
 const VERSION_MANIFEST_URL = 'version.json';
 const VERSION_CHECK_INTERVAL_MS = 60 * 1000;
 const APP_UPDATE_DISMISSED_KEY = 'cpt-update-dismissed-version-v1';
@@ -1878,9 +1878,11 @@ function readProjectMetaFromText(text){
 }
 function setProjectMetaInText(userText, payload){
   const clean = stripProjectMetaFromText(userText || '');
-  const normalized = {
-    project_group: normalizeProjectGroupKey(payload && payload.project_group)
-  };
+  const normalized = { ...(payload && typeof payload === 'object' ? payload : {}) };
+  normalized.project_group = normalizeProjectGroupKey(normalized.project_group);
+  if(Object.prototype.hasOwnProperty.call(normalized, 'disbursement_items')){
+    normalized.disbursement_items = normalizeDisbursementItems(normalized.disbursement_items);
+  }
   const encoded = encodeGanttPayload(normalized);
   if(!encoded) return clean;
   return clean + '\n\n' + PROJECT_META_PREFIX + encoded + PROJECT_META_SUFFIX;
@@ -1930,9 +1932,114 @@ function formatMoney(value){
   const n = parseMoney(value);
   return n.toLocaleString('vi-VN') + ' đồng';
 }
+function newDisbursementItemId(){
+  if(window.crypto && typeof window.crypto.randomUUID === 'function') return 'disb_' + window.crypto.randomUUID();
+  return 'disb_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
+}
+function normalizeDisbursementItems(items){
+  if(!Array.isArray(items)) return [];
+  return items.map((item, idx)=>{
+    const amount = Math.max(0, parseMoney(item && item.amount));
+    const name = String(item && item.name ? item.name : '').trim();
+    if(!name && amount <= 0) return null;
+    return {
+      id: String(item && item.id ? item.id : '').trim() || `disb_item_${idx + 1}`,
+      name: name || `Lần giải ngân ${idx + 1}`,
+      amount
+    };
+  }).filter(Boolean);
+}
+function disbursementItemsTotal(items){
+  return normalizeDisbursementItems(items).reduce((sum, item)=>sum + parseMoney(item.amount), 0);
+}
+function projectDisbursementMeta(project){
+  return readProjectMetaFromText(project && project.funding_source ? project.funding_source : '');
+}
+function projectDisbursementItems(project){
+  const meta = projectDisbursementMeta(project);
+  if(meta && Object.prototype.hasOwnProperty.call(meta, 'disbursement_items')){
+    return normalizeDisbursementItems(meta.disbursement_items);
+  }
+  const legacyAmount = parseMoney(project && project.disbursed_amount);
+  return legacyAmount > 0 ? [{ id:'legacy_disbursed_amount', name:'Đã giải ngân đã nhập trước đây', amount:legacyAmount }] : [];
+}
+function projectDisbursedAmount(project){
+  const meta = projectDisbursementMeta(project);
+  if(meta && Object.prototype.hasOwnProperty.call(meta, 'disbursement_items')){
+    return disbursementItemsTotal(meta.disbursement_items);
+  }
+  return parseMoney(project && project.disbursed_amount);
+}
+function setProjectDisbursementItemsInText(oldFullText, items){
+  const userText = stripInternalProjectText(oldFullText || '');
+  const meta = { ...(readProjectMetaFromText(oldFullText || '') || {}), disbursement_items: normalizeDisbursementItems(items) };
+  let next = setProjectMetaInText(userText, meta);
+  const ganttPayload = readGanttProjectSyncFromText(oldFullText || '');
+  if(ganttPayload) next = setGanttProjectSyncInText(next, ganttPayload);
+  const constructionPayload = readConstructionGanttSyncFromText(oldFullText || '');
+  if(constructionPayload) next = setConstructionGanttSyncInText(next, constructionPayload);
+  return next;
+}
+function saveProjectDisbursementItems(project, items){
+  if(!project) return [];
+  const clean = normalizeDisbursementItems(items);
+  const disbursedAmount = disbursementItemsTotal(clean);
+  const nextFundingSource = setProjectDisbursementItemsInText(project.funding_source || '', clean);
+  touchLocalProject(project.id, { funding_source:nextFundingSource, disbursed_amount:disbursedAmount });
+  scheduleProjectSave(project.id, { funding_source:nextFundingSource, disbursed_amount:disbursedAmount });
+  updateFundingPreview(project.id);
+  return clean;
+}
+function fundingPercentValue(f){
+  const total = parseMoney(f && f.total);
+  const disbursed = parseMoney(f && f.disbursed);
+  if(total <= 0) return 0;
+  return Math.max(0, Math.round((disbursed / total) * 1000) / 10);
+}
+function fundingPercentText(f){
+  const value = fundingPercentValue(f);
+  return Number.isInteger(value) ? `${value}%` : `${value.toFixed(1)}%`;
+}
+function fundingChartSummaryText(f){
+  if(parseMoney(f && f.total) <= 0) return `${formatMoney(f.disbursed)} đã giải ngân - chưa nhập tổng vốn giao`;
+  return `${formatMoney(f.disbursed)} / ${formatMoney(f.total)} đã giải ngân`;
+}
+function fundingChartParts(f, c){
+  const total = Math.max(0, parseMoney(f && f.total));
+  const disbursed = Math.max(0, parseMoney(f && f.disbursed));
+  const remaining = total - disbursed;
+  if(total <= 0 && disbursed <= 0){
+    return { labels:['Chưa có dữ liệu'], data:[1], colors:[c.border], values:[0], empty:true };
+  }
+  if(total <= 0){
+    return { labels:['Đã giải ngân'], data:[disbursed], colors:[c.green], values:[disbursed], empty:false };
+  }
+  if(remaining < 0){
+    return { labels:['Trong tổng vốn giao','Vượt tổng vốn'], data:[total, Math.abs(remaining)], colors:[c.green, c.red], values:[total, Math.abs(remaining)], empty:false };
+  }
+  return { labels:['Đã giải ngân','Còn lại chưa giải ngân'], data:[disbursed, remaining], colors:[c.green, c.amber], values:[disbursed, remaining], empty:false };
+}
+function renderDisbursementItemRow(item, idx, owner, c){
+  const rowBg = theme === 'dark' ? 'rgba(10,22,38,0.48)' : 'rgba(255,255,255,0.58)';
+  const safeId = escapeHtml(item.id);
+  if(owner){
+    return `<div data-disbursement-row="${safeId}" style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;padding:10px;border:1px solid ${c.border};border-radius:12px;background:${rowBg};">
+      <div style="flex:1 1 230px;min-width:170px;"><label style="font-size:11px;font-weight:750;color:${c.sub};display:block;margin-bottom:5px;">Tên lần giải ngân ${idx + 1}</label><input data-action="disbursement_name" data-id="${safeId}" type="text" value="${escapeHtml(item.name)}" placeholder="Ví dụ: Giải ngân đợt 1" style="width:100%;box-sizing:border-box;font-size:13px;padding:9px 10px;border:1px solid ${c.border};border-radius:9px;background:${c.inputBg};color:${c.text};"/></div>
+      <div style="flex:0 1 190px;min-width:150px;"><label style="font-size:11px;font-weight:750;color:${c.sub};display:block;margin-bottom:5px;">Số tiền</label><input data-action="disbursement_amount" data-id="${safeId}" type="number" min="0" step="1" value="${parseMoney(item.amount)}" style="width:100%;box-sizing:border-box;font-size:13px;padding:9px 10px;border:1px solid ${c.border};border-radius:9px;background:${c.inputBg};color:${c.text};"/></div>
+      <button data-action="delete_disbursement_item" data-id="${safeId}" title="Xóa lần giải ngân" style="width:38px;height:38px;border:1px solid ${c.border};border-radius:10px;background:${theme==='dark'?'rgba(120,30,38,0.22)':'rgba(255,238,238,0.62)'};color:${c.red};cursor:pointer;"><i class="ti ti-trash" aria-hidden="true"></i></button>
+    </div>`;
+  }
+  return `<div data-disbursement-row="${safeId}" style="display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:11px 12px;border:1px solid ${c.border};border-radius:12px;background:${rowBg};"><span style="font-size:13px;font-weight:760;color:${c.text};">${escapeHtml(item.name)}</span><strong style="font-size:14px;color:${c.green};white-space:nowrap;">${formatMoney(item.amount)}</strong></div>`;
+}
+function renderDisbursementItemsList(items, owner, c){
+  if(!items.length){
+    return `<p style="margin:0;padding:12px;border:1px dashed ${c.border};border-radius:12px;color:${c.sub};font-size:13px;text-align:center;">Chưa có lần giải ngân nào.</p>`;
+  }
+  return items.map((item, idx)=>renderDisbursementItemRow(item, idx, owner, c)).join('');
+}
 function projectFunding(p){
   const total = parseMoney(p && p.total_budget);
-  const disbursed = parseMoney(p && p.disbursed_amount);
+  const disbursed = projectDisbursedAmount(p);
   const remaining = total - disbursed;
   return { total, disbursed, remaining };
 }
@@ -1976,14 +2083,22 @@ function updateFundingPreview(projectId){
   const totalEl = document.getElementById('totalBudgetText');
   const disbursedEl = document.getElementById('disbursedBudgetText');
   const remainingEl = document.getElementById('remainingBudgetText');
+  const percentEl = document.getElementById('fundingPercentText');
+  const summaryEl = document.getElementById('fundingChartSummary');
   if(totalEl) totalEl.textContent = formatMoney(f.total);
   if(disbursedEl) disbursedEl.textContent = formatMoney(f.disbursed);
   if(remainingEl){
     remainingEl.textContent = formatMoney(f.remaining);
     remainingEl.style.color = f.remaining < 0 ? colors().red : colors().green;
   }
+  if(percentEl) percentEl.textContent = fundingPercentText(f);
+  if(summaryEl) summaryEl.textContent = fundingChartSummaryText(f);
   if(chartInstance && chartInstance.funding){
-    chartInstance.funding.data.datasets[0].data = [f.total, f.disbursed, f.remaining];
+    const parts = fundingChartParts(f, colors());
+    chartInstance.funding.data.labels = parts.labels;
+    chartInstance.funding.data.datasets[0].data = parts.data;
+    chartInstance.funding.data.datasets[0].backgroundColor = parts.colors;
+    chartInstance.funding.data.datasets[0].tooltipValues = parts.values;
     chartInstance.funding.update('none');
   }
 }
@@ -2656,6 +2771,8 @@ function renderProjectDetail(project, c){
   const filteredTasks = tasks.filter(t => taskMatchesProjectFilter(t, projectTaskFilter));
   const s = projectStats(project);
   const f = projectFunding(project);
+  const disbursementItems = projectDisbursementItems(project);
+  const fundingPercent = fundingPercentText(f);
   const alertSummary = projectAlertSummary(project);
   const compareStats = projectComparisonStats(project);
   const filterDefs = projectFilterDefinitions(project);
@@ -2737,14 +2854,19 @@ function renderProjectDetail(project, c){
       <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(220px,1fr)); gap:12px; align-items:start;">
         <div style="grid-column:1 / -1;"><label style="font-size:12px; color:${c.sub}; display:block; margin-bottom:6px;">Nguồn vốn</label><textarea data-action="funding_source" ${owner?'':'readonly'} placeholder="Ví dụ: Ngân sách tỉnh, ngân sách huyện, vốn sự nghiệp, vốn xã hội hóa..." style="width:100%; min-height:70px; resize:vertical; font-size:14px; font-family:inherit; padding:10px 12px; border:1px solid ${c.border}; border-radius:10px; background:${c.inputBg}; color:${c.text}; box-sizing:border-box;">${escapeHtml(stripInternalProjectText(project.funding_source || ''))}</textarea></div>
         <div><label style="font-size:12px; color:${c.sub}; display:block; margin-bottom:6px;">Tổng vốn giao (đồng)</label><input data-action="total_budget" type="number" min="0" step="1" ${owner?'':'readonly'} value="${parseMoney(project.total_budget)}" style="width:100%; box-sizing:border-box; font-size:14px; padding:10px 12px; border:1px solid ${c.border}; border-radius:10px; background:${c.inputBg}; color:${c.text};"/><p id="totalBudgetText" style="margin:7px 0 0; font-size:12px; color:${c.sub};">${formatMoney(f.total)}</p></div>
-        <div><label style="font-size:12px; color:${c.sub}; display:block; margin-bottom:6px;">Đã giải ngân (đồng)</label><input data-action="disbursed_amount" type="number" min="0" step="1" ${owner?'':'readonly'} value="${parseMoney(project.disbursed_amount)}" style="width:100%; box-sizing:border-box; font-size:14px; padding:10px 12px; border:1px solid ${c.border}; border-radius:10px; background:${c.inputBg}; color:${c.text};"/><p id="disbursedBudgetText" style="margin:7px 0 0; font-size:12px; color:${c.sub};">${formatMoney(f.disbursed)}</p></div>
+        <div><label style="font-size:12px; color:${c.sub}; display:block; margin-bottom:6px;">Đã giải ngân (tự tổng hợp)</label><div id="disbursedBudgetText" style="border:1px solid ${c.border}; border-radius:10px; padding:10px 12px; background:${c.inputBg}; font-size:14px; font-weight:800; color:${c.green};">${formatMoney(f.disbursed)}</div><p style="margin:7px 0 0; font-size:12px; color:${c.sub};">Tổng hợp từ các lần giải ngân nhỏ bên dưới.</p></div>
         <div><label style="font-size:12px; color:${c.sub}; display:block; margin-bottom:6px;">Còn lại chưa giải ngân</label><div style="border:1px solid ${c.border}; border-radius:10px; padding:10px 12px; background:${c.inputBg}; font-size:14px; font-weight:700; color:${f.remaining < 0 ? c.red : c.green};" id="remainingBudgetText">${formatMoney(f.remaining)}</div><p style="margin:7px 0 0; font-size:12px; color:${c.sub};">Tự tính = Tổng vốn giao - Đã giải ngân.</p></div>
+        <div style="grid-column:1 / -1; border:1px solid ${c.border}; border-radius:14px; padding:12px; background:${theme==='dark'?'rgba(10,22,38,0.42)':'rgba(255,255,255,0.42)'};">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px;"><h4 style="margin:0;font-size:15px;font-weight:720;"><i class="ti ti-receipt-2" style="vertical-align:-2px;margin-right:5px;"></i>Các lần giải ngân</h4><span id="disbursementCountText" style="font-size:12px;font-weight:800;color:${c.accent};background:${c.info};border:1px solid ${c.border};border-radius:980px;padding:5px 9px;">${disbursementItems.length} lần giải ngân</span></div>
+          ${owner ? `<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px;"><div style="flex:1 1 240px;min-width:180px;"><label style="font-size:11px;font-weight:750;color:${c.sub};display:block;margin-bottom:5px;">Tên lần giải ngân</label><input id="disbursementNameInput" type="text" placeholder="Ví dụ: Giải ngân đợt 1" style="width:100%;box-sizing:border-box;font-size:13px;padding:9px 10px;border:1px solid ${c.border};border-radius:9px;background:${c.inputBg};color:${c.text};"/></div><div style="flex:0 1 190px;min-width:150px;"><label style="font-size:11px;font-weight:750;color:${c.sub};display:block;margin-bottom:5px;">Số tiền</label><input id="disbursementAmountInput" type="number" min="0" step="1" placeholder="0" style="width:100%;box-sizing:border-box;font-size:13px;padding:9px 10px;border:1px solid ${c.border};border-radius:9px;background:${c.inputBg};color:${c.text};"/></div><button data-action="add_disbursement_item" style="border:none;background:${c.accent};color:#fff;font-size:13px;font-weight:760;padding:10px 14px;border-radius:10px;cursor:pointer;white-space:nowrap;"><i class="ti ti-plus" style="vertical-align:-2px;margin-right:4px;"></i>Thêm giải ngân</button></div>` : ''}
+          <div id="disbursementItemsList" style="display:grid;gap:8px;">${renderDisbursementItemsList(disbursementItems, owner, c)}</div>
+        </div>
       </div>
     </div>
 
     <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(320px,1fr)); gap:16px; margin-bottom:24px;">
       <div style="background:${c.card}; border:1px solid ${c.border}; border-radius:16px; padding:20px; ${cardEffect()}"><h3 style="margin:0 0 14px; font-size:17px; font-weight:650;">Biểu đồ danh sách công việc</h3><div style="display:flex; gap:24px; align-items:center; flex-wrap:wrap;"><div style="position:relative; width:150px; height:150px; flex-shrink:0;"><canvas id="donutChart"></canvas></div><div style="flex:1; min-width:200px; height:170px; position:relative;"><canvas id="barChart"></canvas></div></div></div>
-      <div style="background:${c.card}; border:1px solid ${c.border}; border-radius:16px; padding:20px; ${cardEffect()}"><h3 style="margin:0 0 14px; font-size:17px; font-weight:650;">Biểu đồ nguồn vốn</h3><div style="height:220px; position:relative;"><canvas id="fundingChart"></canvas></div><p style="margin:12px 0 0; color:${c.sub}; font-size:12px; line-height:1.5;">Biểu đồ so sánh Tổng vốn giao, Đã giải ngân và Còn lại chưa giải ngân.</p></div>
+      <div style="background:${c.card}; border:1px solid ${c.border}; border-radius:16px; padding:20px; ${cardEffect()}"><h3 style="margin:0 0 14px; font-size:17px; font-weight:650;">Biểu đồ nguồn vốn</h3><div style="height:240px; position:relative;"><canvas id="fundingChart"></canvas><div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;pointer-events:none;"><div style="text-align:center;transform:translateY(-6px);"><div id="fundingPercentText" style="font-size:28px;font-weight:900;color:${c.accent};line-height:1;text-shadow:${theme==='dark'?'0 1px 8px rgba(0,0,0,0.45)':'0 1px 6px rgba(255,255,255,0.85)'};">${fundingPercent}</div><div style="margin-top:4px;font-size:11px;font-weight:780;color:${c.sub};text-transform:uppercase;letter-spacing:0;">đã giải ngân</div></div></div></div><p id="fundingChartSummary" style="margin:12px 0 0; color:${c.sub}; font-size:12px; line-height:1.5; text-align:center;">${fundingChartSummaryText(f)}</p></div>
     </div>
 
     <h3 style="margin:0 0 10px; font-size:18px; font-weight:720; color:var(--project-readable-text); text-shadow:0 1px 1px ${theme==='dark'?'rgba(0,0,0,0.42)':'rgba(255,255,255,0.45)'};">Danh sách công việc</h3>
@@ -2881,16 +3003,66 @@ function attachEvents(project){
   if(totalBudget){
     totalBudget.oninput = ()=>{ if(!owner) return; const v=parseMoney(totalBudget.value); touchLocalProject(project.id, { total_budget:v }); scheduleProjectSave(project.id, { total_budget:v }); updateFundingPreview(project.id); };
   }
-  const disbursedAmount = root.querySelector('[data-action="disbursed_amount"]');
-  if(disbursedAmount){
-    disbursedAmount.oninput = ()=>{ if(!owner) return; const v=parseMoney(disbursedAmount.value); touchLocalProject(project.id, { disbursed_amount:v }); scheduleProjectSave(project.id, { disbursed_amount:v }); updateFundingPreview(project.id); };
+  const addDisbursementBtn = root.querySelector('[data-action="add_disbursement_item"]');
+  if(addDisbursementBtn){
+    const nameInput = root.querySelector('#disbursementNameInput');
+    const amountInput = root.querySelector('#disbursementAmountInput');
+    const addDisbursement = ()=>{
+      if(!owner) return;
+      const items = projectDisbursementItems(project);
+      const rawName = String(nameInput && nameInput.value ? nameInput.value : '').trim();
+      const amount = Math.max(0, parseMoney(amountInput && amountInput.value));
+      if(!rawName && amount <= 0){
+        alert('Nhập tên hoặc số tiền cho lần giải ngân.');
+        return;
+      }
+      const name = rawName || `Giải ngân lần ${items.length + 1}`;
+      items.push({ id:newDisbursementItemId(), name, amount });
+      saveProjectDisbursementItems(project, items);
+      render();
+    };
+    addDisbursementBtn.onclick = addDisbursement;
+    if(nameInput) nameInput.onkeydown = e=>{ if(e.key === 'Enter') addDisbursement(); };
+    if(amountInput) amountInput.onkeydown = e=>{ if(e.key === 'Enter') addDisbursement(); };
   }
+  root.querySelectorAll('[data-action="disbursement_name"]').forEach(inp=>{
+    let timer;
+    inp.oninput=()=>{
+      if(!owner) return;
+      clearTimeout(timer);
+      timer=setTimeout(()=>{
+        const items = projectDisbursementItems(project).map(item=> item.id === inp.dataset.id ? { ...item, name:inp.value } : item);
+        saveProjectDisbursementItems(project, items);
+      }, 500);
+    };
+  });
+  root.querySelectorAll('[data-action="disbursement_amount"]').forEach(inp=>{
+    let timer;
+    inp.oninput=()=>{
+      if(!owner) return;
+      clearTimeout(timer);
+      timer=setTimeout(()=>{
+        const items = projectDisbursementItems(project).map(item=> item.id === inp.dataset.id ? { ...item, amount:parseMoney(inp.value) } : item);
+        saveProjectDisbursementItems(project, items);
+      }, 500);
+    };
+  });
+  root.querySelectorAll('[data-action="delete_disbursement_item"]').forEach(btn=>{
+    btn.onclick=()=>{
+      if(!owner) return;
+      if(!confirm('Xóa lần giải ngân này?')) return;
+      const items = projectDisbursementItems(project).filter(item=>item.id !== btn.dataset.id);
+      saveProjectDisbursementItems(project, items);
+      render();
+    };
+  });
 }
 
 function drawCharts(project, c){
   const done=(project.tasks||[]).filter(t=>t.done).length;
   const pending=(project.tasks||[]).length-done;
   const f = projectFunding(project);
+  const fundingParts = fundingChartParts(f, c);
   if(chartInstance){
     try{ if(chartInstance.donut) chartInstance.donut.destroy(); if(chartInstance.bar) chartInstance.bar.destroy(); if(chartInstance.funding) chartInstance.funding.destroy(); }catch(e){}
   }
@@ -2907,13 +3079,16 @@ function drawCharts(project, c){
   }
   if(fundingCtx){
     funding=new Chart(fundingCtx, {
-      type:'bar',
-      data:{ labels:['Tổng vốn giao','Đã giải ngân','Còn lại chưa giải ngân'], datasets:[{ label:'Đồng', data:[f.total, f.disbursed, f.remaining], backgroundColor:[c.accent, c.green, f.remaining < 0 ? c.red : c.amber], borderRadius:8 }] },
+      type:'doughnut',
+      data:{ labels:fundingParts.labels, datasets:[{ label:'Đồng', data:fundingParts.data, backgroundColor:fundingParts.colors, tooltipValues:fundingParts.values, borderWidth:0 }] },
       options:{
         responsive:true,
         maintainAspectRatio:false,
-        plugins:{ legend:{display:false}, tooltip:{ callbacks:{ label:(ctx)=> formatMoney(ctx.parsed.y) } } },
-        scales:{ x:{ ticks:{color:c.sub}, grid:{display:false} }, y:{ ticks:{ color:c.sub, callback:(value)=> Number(value).toLocaleString('vi-VN') }, grid:{color:c.border} } }
+        cutout:'68%',
+        plugins:{
+          legend:{ display:true, position:'bottom', labels:{ color:c.sub, boxWidth:10, boxHeight:10, usePointStyle:true, padding:14 } },
+          tooltip:{ callbacks:{ label:(ctx)=> `${ctx.label}: ${formatMoney((ctx.dataset.tooltipValues || [])[ctx.dataIndex] ?? ctx.raw)}` } }
+        }
       }
     });
   }

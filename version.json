@@ -1,4 +1,4 @@
 {
-  "version": "1.0.6",
-  "notes": "Sửa cơ chế cập nhật: web chỉ thông báo bản mới và chỉ tải bản mới khi người dùng bấm cập nhật."
+  "version": "1.0.7",
+  "notes": "Bổ sung danh sách các lần giải ngân nhỏ và đổi biểu đồ nguồn vốn sang biểu đồ tròn hiển thị phần trăm giải ngân."
 }
