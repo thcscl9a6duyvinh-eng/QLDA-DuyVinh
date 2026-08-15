@@ -1,4 +1,4 @@
 {
-  "version": "1.3.10",
-  "notes": "Sua loi cap nhat thu cong tren Vercel bi service worker tra ve index.html cu; giu chan tu dong cap nhat khi F5/Ctrl+F5."
+  "version": "1.0.9",
+  "notes": "Khóa cập nhật phiên bản qua F5/Ctrl+F5; chỉ cập nhật khi từng tài khoản bấm đồng ý trong popup. Bỏ gạch ngang và làm mờ tên công việc đã hoàn thành."
 }
