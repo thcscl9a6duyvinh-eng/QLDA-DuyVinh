@@ -1,4 +1,4 @@
 {
-  "version": "1.0.9",
-  "notes": "Khóa cập nhật phiên bản qua F5/Ctrl+F5; chỉ cập nhật khi từng tài khoản bấm đồng ý trong popup. Bỏ gạch ngang và làm mờ tên công việc đã hoàn thành."
+  "version": "1.0.10",
+  "notes": "Khôi phục đúng web QLDA sau deploy nhầm; giữ cơ chế chỉ cập nhật khi từng tài khoản bấm đồng ý trong popup."
 }
