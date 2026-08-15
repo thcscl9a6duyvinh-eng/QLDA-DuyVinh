@@ -1,63 +1,61 @@
-const CACHE_NAME = 'qlda-app-shell-v1';
-const INDEX_PATH = 'index.html';
+const CACHE_NAME = 'thanhtra-manual-shell-v1';
+const APPROVED_CACHE_PREFIX = 'thanhtra-approved-shell-';
 
-function indexUrl(){
-  return new URL(INDEX_PATH, self.registration.scope).toString();
-}
-
-async function cacheInitialIndex(){
-  const cache = await caches.open(CACHE_NAME);
-  const key = indexUrl();
-  const existing = await cache.match(key, { ignoreSearch:true });
-  if(existing) return;
-  const res = await fetch(key + '?sw-install=' + Date.now(), { cache:'reload' });
-  if(res && res.ok) await cache.put(key, res.clone());
-}
-
-async function serveCachedIndex(request){
-  const cache = await caches.open(CACHE_NAME);
-  const key = indexUrl();
-  const cached = await cache.match(key, { ignoreSearch:true });
-  if(cached) return cached;
-  const res = await fetch(request);
-  if(res && res.ok) await cache.put(key, res.clone());
-  return res;
-}
-
-async function updateCachedIndex(version){
-  const cache = await caches.open(CACHE_NAME);
-  const key = indexUrl();
-  const freshUrl = key + '?manual-update=' + encodeURIComponent(version || '') + '&_=' + Date.now();
-  const res = await fetch(freshUrl, { cache:'reload' });
-  if(!res || !res.ok) throw new Error('Không tải được index.html mới');
-  await cache.put(key, res.clone());
-}
-
-self.addEventListener('install', event=>{
+self.addEventListener('install', event => {
   self.skipWaiting();
-  event.waitUntil(cacheInitialIndex());
+  event.waitUntil(caches.open(CACHE_NAME));
 });
 
-self.addEventListener('activate', event=>{
-  event.waitUntil(self.clients.claim());
-});
-
-self.addEventListener('fetch', event=>{
-  const req = event.request;
-  const url = new URL(req.url);
-  if(url.origin !== self.location.origin) return;
-  const isIndexRequest = req.mode === 'navigate' || url.pathname.endsWith('/') || url.pathname.endsWith('/index.html');
-  if(!isIndexRequest) return;
-  event.respondWith(serveCachedIndex(req));
-});
-
-self.addEventListener('message', event=>{
-  const data = event.data || {};
-  if(data.type !== 'CACHE_APP_VERSION') return;
-  const port = event.ports && event.ports[0];
+self.addEventListener('activate', event => {
   event.waitUntil(
-    updateCachedIndex(data.version)
-      .then(()=>{ if(port) port.postMessage({ ok:true, version:data.version || '' }); })
-      .catch(error=>{ if(port) port.postMessage({ ok:false, error:error && error.message ? error.message : 'update_failed' }); })
+    caches.keys()
+      .then(keys => Promise.all(keys
+        .filter(key => key !== CACHE_NAME && key.startsWith('thanhtra-') && !key.startsWith(APPROVED_CACHE_PREFIX))
+        .map(key => caches.delete(key))))
+      .then(() => self.clients.claim())
   );
+});
+
+self.addEventListener('message', event => {
+  if(!event.data || event.data.type !== 'UPDATE_APP_SHELL') return;
+  event.waitUntil((async () => {
+    try{
+      const cache = await caches.open(CACHE_NAME);
+      const stamp = Date.now();
+      const indexRes = await fetch('index.html?update=' + stamp, { cache:'no-store' });
+      if(!indexRes.ok) throw new Error('Cannot fetch index.html');
+      await cache.put('index.html', indexRes.clone());
+      const versionRes = await fetch('version.json?update=' + stamp, { cache:'no-store' });
+      if(versionRes.ok) await cache.put('version.json', versionRes.clone());
+      if(event.source) event.source.postMessage({ type:'APP_SHELL_UPDATED' });
+    }catch(error){
+      if(event.source) event.source.postMessage({ type:'APP_SHELL_UPDATE_FAILED', message:error && error.message ? error.message : 'Update failed' });
+    }
+  })());
+});
+
+self.addEventListener('fetch', event => {
+  const req = event.request;
+  if(req.method !== 'GET') return;
+  const url = new URL(req.url);
+  const isVersion = url.pathname.endsWith('/version.json');
+  if(isVersion){
+    event.respondWith(fetch(req, { cache:'no-store' }).catch(() => caches.match('version.json')));
+    return;
+  }
+  const isIndex = url.pathname.endsWith('/') || url.pathname.endsWith('/index.html');
+  const isManualUpdateFetch = isIndex && url.searchParams.has('update');
+  if(isManualUpdateFetch){
+    event.respondWith(fetch(req, { cache:'no-store' }));
+    return;
+  }
+  if(req.mode === 'navigate' || isIndex){
+    event.respondWith(
+      caches.open(CACHE_NAME)
+        .then(cache => cache.match('index.html'))
+        .then(cached => cached || fetch(req, { cache:'no-store' }))
+    );
+    return;
+  }
+  event.respondWith(fetch(req).catch(() => caches.match(req)));
 });

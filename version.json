@@ -1,4 +1,4 @@
 {
-  "version": "1.0.8",
-  "notes": "Tăng cỡ chữ BAN QLDA BẮC BÌNH trên logo/sidebar."
+  "version": "1.3.10",
+  "notes": "Sua loi cap nhat thu cong tren Vercel bi service worker tra ve index.html cu; giu chan tu dong cap nhat khi F5/Ctrl+F5."
 }
