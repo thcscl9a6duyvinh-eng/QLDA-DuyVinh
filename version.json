@@ -1,4 +1,4 @@
 {
-  "version": "1.0.10",
-  "notes": "Khôi phục đúng web QLDA sau deploy nhầm; giữ cơ chế chỉ cập nhật khi từng tài khoản bấm đồng ý trong popup."
+  "version": "1.0.11",
+  "notes": "Sửa lỗi client cũ báo cập nhật thành công nhưng vẫn giữ cache 1.0.8; hãy tải lại trang một lần rồi bấm cập nhật nếu đang bị kẹt bản cũ."
 }

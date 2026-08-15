@@ -55,7 +55,10 @@ self.addEventListener('message', event=>{
   const data = event.data || {};
   if(data.type !== 'CACHE_APP_VERSION') return;
   const port = event.ports && event.ports[0];
-  if(data.confirmedByUser !== true){
+  // Backward compatible with app versions before 1.0.11:
+  // older clients only send CACHE_APP_VERSION from the popup confirm button,
+  // but they do not include confirmedByUser yet.
+  if(data.confirmedByUser === false){
     if(port) port.postMessage({ ok:false, error:'update_requires_user_confirm' });
     return;
   }
