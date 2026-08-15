@@ -1,4 +1,4 @@
 {
-  "version": "1.0.11",
-  "notes": "Sửa lỗi client cũ báo cập nhật thành công nhưng vẫn giữ cache 1.0.8; hãy tải lại trang một lần rồi bấm cập nhật nếu đang bị kẹt bản cũ."
+  "version": "1.0.12",
+  "notes": "Tối ưu giao diện mobile: chặn tràn ngang và thêm bản xem nhanh Gantt co vừa màn hình điện thoại."
 }
